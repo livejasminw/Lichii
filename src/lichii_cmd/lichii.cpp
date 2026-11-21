@@ -58,6 +58,7 @@
 #include "common/settings.h"
 #include "common/string_util.h"
 #include "core/core.h"
+#include "core/frontend/framebuffer_layout.h"
 #include "core/core_timing.h"
 #include "core/cpu_manager.h"
 #include "core/crypto/key_manager.h"
@@ -810,6 +811,9 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     }
     StartIosDiagnostics();
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait LandscapeLeft LandscapeRight");
+    // Portrait is split at the fold: the picture at the top, the controls below. Set before the
+    // window exists so its first layout already uses it.
+    Layout::portrait_top_inset = 0.0f;
 #endif
     if (lp.filepath.empty()) {
         LOG_CRITICAL(Frontend, "Failed to load ROM: No ROM specified");

@@ -28,13 +28,16 @@ FramebufferLayout DefaultFrameLayout(u32 width, u32 height) noexcept {
     ASSERT(width > 0 && height > 0);
     auto const window_aspect_ratio = float(height) / float(width);
     auto const emulation_aspect_ratio = EmulationAspectRatio(Settings::values.aspect_ratio.GetValue(), window_aspect_ratio);
-    Common::Rectangle<u32> const screen_window_area{0, 0, width, height};
+    // A split portrait window (picture above, controls below) only gives the picture its top half.
+    const bool split = portrait_top_inset >= 0.0f && height > width;
+    Common::Rectangle<u32> const screen_window_area{0, 0, width, split ? height / 2 : height};
     auto screen = MaxRectangle(screen_window_area, emulation_aspect_ratio);
     if (window_aspect_ratio < emulation_aspect_ratio) {
         screen = screen.TranslateX((screen_window_area.GetWidth() - screen.GetWidth()) / 2);
-    } else if (portrait_top_inset >= 0.0f) {
+    } else if (split) {
         // Frontends with controls under the picture (iOS portrait) keep it at the top.
-        screen = screen.TranslateY(u32(std::round(float(height) * portrait_top_inset)));
+        screen = screen.TranslateX((width - screen.GetWidth()) / 2)
+                     .TranslateY(u32(std::round(float(height) * portrait_top_inset)));
     } else {
         screen = screen.TranslateY((height - screen.GetHeight()) / 2);
     }

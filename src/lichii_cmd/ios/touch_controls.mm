@@ -9,7 +9,6 @@
 
 #include "input_common/drivers/virtual_gamepad.h"
 #include "input_common/main.h"
-#include "core/frontend/framebuffer_layout.h"
 #include "lichii_cmd/ios/touch_controls.h"
 
 using VButton = InputCommon::VirtualGamepad::VirtualButton;
@@ -143,22 +142,28 @@ static void Place(UIView* v, CGFloat cx, CGFloat cy, CGFloat w, CGFloat h, bool 
 }
 
 - (void)layoutSubviews {
+    // Always cover the whole game view; the overlay may have been sized before a rotation.
+    if (self.superview && !CGRectEqualToRect(self.frame, self.superview.bounds)) {
+        self.frame = self.superview.bounds;
+    }
     [super layoutSubviews];
-    const CGRect safe = UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets);
-    const CGFloat W = safe.size.width, H = safe.size.height, X = safe.origin.x, Y = safe.origin.y;
-    const bool portrait = H > W;
+    const CGRect full = self.bounds;
+    const UIEdgeInsets inset = self.safeAreaInsets;
+    const CGFloat W = full.size.width - inset.left - inset.right;
+    const CGFloat X = full.origin.x + inset.left;
+    const bool portrait = full.size.height > full.size.width;
 
     CGFloat b;           // round button size
     CGPoint dpad, face;  // diamond centers
     CGFloat shoulder_y, minus_y;
     CGFloat shoulders[4];
     if (portrait) {
-        // Game at the top (the picture is anchored there), controller in the bottom half: on a
-        // folded phone that's the lower screen. One compact cluster, like a handheld.
-        const CGFloat game_bottom = Y + W * 9.0 / 16.0;
-        const CGFloat top = std::max(game_bottom, self.bounds.size.height * 0.5);
-        const CGFloat area_h = Y + H - top;
-        b = std::min(W * 0.62 / 6.5, area_h / 6.2);
+        // Split at the fold: the game is drawn at the top of the upper half (see
+        // Layout::portrait_top_inset); the controller fills the lower half.
+        const CGFloat top = full.size.height * 0.5;
+        const CGFloat bottom = full.size.height - inset.bottom;
+        const CGFloat area_h = bottom - top;
+        b = std::min(W * 0.68 / 6.5, area_h / 5.8);
         const CGFloat cluster_w = b * 6.5;
         const CGFloat cx = X + W / 2;
         const CGFloat total_h = b * (0.72 + 0.35 + 3.1 + 0.3 + 0.8);
@@ -171,9 +176,10 @@ static void Place(UIView* v, CGFloat cx, CGFloat cy, CGFloat w, CGFloat h, bool 
         for (int i = 0; i < 4; ++i) {
             shoulders[i] = cx - cluster_w / 2 + b * 0.6 + i * (cluster_w - b * 1.2) / 3;
         }
-        Layout::portrait_top_inset = static_cast<float>(Y / self.bounds.size.height);
     } else {
         // Landscape: the game fills the screen; d-pad and face buttons in the lower corners.
+        const CGFloat H = full.size.height - inset.top - inset.bottom;
+        const CGFloat Y = full.origin.y + inset.top;
         b = H * 0.105;
         dpad = CGPointMake(X + b * 2.0, Y + H - b * 2.0);
         face = CGPointMake(X + W - b * 2.0, Y + H - b * 2.0);
@@ -183,7 +189,6 @@ static void Place(UIView* v, CGFloat cx, CGFloat cy, CGFloat w, CGFloat h, bool 
         shoulders[1] = dpad.x + b * 0.65;
         shoulders[2] = face.x - b * 0.65;
         shoulders[3] = face.x + b * 0.65;
-        Layout::portrait_top_inset = -1.0f;
     }
     const CGFloat o = b * 1.05; // diamond spacing
     const CGFloat sw = b * 1.15, sh = b * 0.72;
@@ -223,8 +228,9 @@ static void Place(UIView* v, CGFloat cx, CGFloat cy, CGFloat w, CGFloat h, bool 
         }
     }
     [_toggle sizeToFit];
-    _toggle.center = portrait ? CGPointMake(X + W - _toggle.bounds.size.width, Y + H - 16)
-                              : CGPointMake(X + W / 2, Y + 18);
+    _toggle.center = portrait
+        ? CGPointMake(X + W - _toggle.bounds.size.width, full.size.height - inset.bottom - 16)
+        : CGPointMake(X + W / 2, full.origin.y + inset.top + 18);
 }
 
 // Only the controls take touches; everything else reaches the game (touch screen).
@@ -433,6 +439,18 @@ void Attach(InputCommon::InputSubsystem* input) {
       }
       LichiiControlsView* overlay = [[LichiiControlsView alloc] initWithFrame:host.bounds];
       [host addSubview:overlay];
+      __weak LichiiControlsView* weak_overlay = overlay;
+      [NSTimer scheduledTimerWithTimeInterval:0.5
+                                      repeats:YES
+                                        block:^(NSTimer* timer) {
+                                          LichiiControlsView* o = weak_overlay;
+                                          if (o == nil) {
+                                              [timer invalidate];
+                                          } else if (o.superview &&
+                                                     !CGRectEqualToRect(o.frame, o.superview.bounds)) {
+                                              [o setNeedsLayout];
+                                          }
+                                        }];
 
       for (GCController* controller in GCController.controllers) {
           BindGamepad(controller, overlay);
