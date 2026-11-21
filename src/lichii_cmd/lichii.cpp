@@ -629,6 +629,12 @@ static bool EnsureIosJit() {
         LOG_INFO(Frontend, "iOS JIT: opening {}", url);
         if (!SDL_OpenURL(url.c_str())) {
             LOG_ERROR(Frontend, "iOS JIT: could not open StikDebug: {}", SDL_GetError());
+            SDL_ShowSimpleMessageBox(
+                SDL_MESSAGEBOX_INFORMATION, "Lichii",
+                "Couldn't open StikDebug automatically. Open StikDebug yourself, tap Enable JIT, "
+                "pick Lichii (choose the universal.js script if it asks), then come back here. "
+                "Lichii waits up to 3 minutes.",
+                nullptr);
         }
         // Keep the run loop going while StikDebug attaches (the app is suspended meanwhile).
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(3);
