@@ -12,6 +12,8 @@
 
 namespace Layout {
 
+float portrait_top_inset = -1.0f;
+
 // Finds the largest size subrectangle contained in window area that is confined to the aspect ratio
 static Common::Rectangle<u32> MaxRectangle(Common::Rectangle<u32> window_area, float screen_aspect_ratio) noexcept {
     const float scale = (std::min)(float(window_area.GetWidth()), float(window_area.GetHeight()) / screen_aspect_ratio);
@@ -30,6 +32,9 @@ FramebufferLayout DefaultFrameLayout(u32 width, u32 height) noexcept {
     auto screen = MaxRectangle(screen_window_area, emulation_aspect_ratio);
     if (window_aspect_ratio < emulation_aspect_ratio) {
         screen = screen.TranslateX((screen_window_area.GetWidth() - screen.GetWidth()) / 2);
+    } else if (portrait_top_inset >= 0.0f) {
+        // Frontends with controls under the picture (iOS portrait) keep it at the top.
+        screen = screen.TranslateY(u32(std::round(float(height) * portrait_top_inset)));
     } else {
         screen = screen.TranslateY((height - screen.GetHeight()) / 2);
     }

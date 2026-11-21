@@ -38,6 +38,10 @@ struct FramebufferLayout {
 };
 
 FramebufferLayout DefaultFrameLayout(u32 width, u32 height) noexcept;
+
+/// When >= 0, a picture narrower than a tall window sits this fraction of the window height from
+/// the top instead of being centered (iOS portrait, with the controls underneath).
+extern float portrait_top_inset;
 float EmulationAspectRatio(Settings::AspectRatio aspect, float window_aspect_ratio) noexcept;
 
 } // namespace Layout

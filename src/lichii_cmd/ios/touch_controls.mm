@@ -9,6 +9,7 @@
 
 #include "input_common/drivers/virtual_gamepad.h"
 #include "input_common/main.h"
+#include "core/frontend/framebuffer_layout.h"
 #include "lichii_cmd/ios/touch_controls.h"
 
 using VButton = InputCommon::VirtualGamepad::VirtualButton;
@@ -28,9 +29,27 @@ struct Control {
     UIView* view;
     UIView* knob; // sticks only
     UITouch* touch;
+    bool moved = false;
+    CFTimeInterval down_time = 0;
 };
 
 } // namespace
+
+static UIColor* FillColor() {
+    return [UIColor colorWithRed:0.90 green:0.93 blue:1.00 alpha:0.95];
+}
+static UIColor* PressedColor() {
+    return [UIColor colorWithRed:0.62 green:0.71 blue:0.98 alpha:0.95];
+}
+static UIColor* OutlineColor() {
+    return [UIColor colorWithRed:0.45 green:0.55 blue:0.86 alpha:1.0];
+}
+static UIColor* StickColor() {
+    return [UIColor colorWithRed:0.47 green:0.58 blue:0.90 alpha:0.95];
+}
+static UIColor* LabelColor() {
+    return [UIColor colorWithRed:0.28 green:0.33 blue:0.52 alpha:1.0];
+}
 
 @interface LichiiControlsView : UIView
 @end
@@ -48,10 +67,10 @@ struct Control {
         self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
 
         const auto add_button = [&](VButton b, NSString* text) {
-            _controls.push_back({Kind::Button, b, VStick::Left, text, nil, nil, nil});
+            _controls.push_back({Kind::Button, b, VStick::Left, text, nil, nil, nil, false, 0});
         };
         const auto add_stick = [&](VStick s) {
-            _controls.push_back({Kind::Stick, VButton::ButtonA, s, @"", nil, nil, nil});
+            _controls.push_back({Kind::Stick, VButton::ButtonA, s, @"", nil, nil, nil, false, 0});
         };
         add_stick(VStick::Left);
         add_stick(VStick::Right);
@@ -69,20 +88,18 @@ struct Control {
         add_button(VButton::TriggerZR, @"ZR");
         add_button(VButton::ButtonMinus, @"−");
         add_button(VButton::ButtonPlus, @"+");
-        add_button(VButton::StickL, @"LS");
-        add_button(VButton::StickR, @"RS");
 
         for (auto& c : _controls) {
             UIView* v = [[UIView alloc] init];
             v.userInteractionEnabled = NO;
-            v.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.18];
-            v.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.55].CGColor;
-            v.layer.borderWidth = 1.5;
+            v.backgroundColor = c.kind == Kind::Stick ? StickColor() : FillColor();
+            v.layer.borderColor = OutlineColor().CGColor;
+            v.layer.borderWidth = c.kind == Kind::Stick ? 0 : 3;
             if (c.kind == Kind::Button) {
                 UILabel* label = [[UILabel alloc] init];
                 label.text = c.label;
-                label.textColor = [UIColor colorWithWhite:1.0 alpha:0.9];
-                label.font = [UIFont boldSystemFontOfSize:18];
+                label.textColor = LabelColor();
+                label.font = [UIFont systemFontOfSize:18 weight:UIFontWeightMedium];
                 label.textAlignment = NSTextAlignmentCenter;
                 label.autoresizingMask =
                     UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -90,7 +107,7 @@ struct Control {
             } else {
                 UIView* knob = [[UIView alloc] init];
                 knob.userInteractionEnabled = NO;
-                knob.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.45];
+                knob.backgroundColor = UIColor.clearColor;
                 [v addSubview:knob];
                 c.knob = knob;
             }
@@ -129,44 +146,85 @@ static void Place(UIView* v, CGFloat cx, CGFloat cy, CGFloat w, CGFloat h, bool 
     [super layoutSubviews];
     const CGRect safe = UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets);
     const CGFloat W = safe.size.width, H = safe.size.height, X = safe.origin.x, Y = safe.origin.y;
-    const CGFloat b = std::min(W, H) * 0.13;  // face button size
-    const CGFloat s = std::min(W, H) * 0.34;  // stick size
-    const CGFloat d = b * 0.95;               // d-pad button size
+    const bool portrait = H > W;
 
-    // Face buttons (Switch layout) bottom right; right stick to their left.
-    const CGFloat fx = X + W - b * 1.9, fy = Y + H - b * 2.3;
+    CGFloat b;           // round button size
+    CGPoint dpad, face;  // diamond centers
+    CGFloat shoulder_y, minus_y;
+    CGFloat shoulders[4];
+    if (portrait) {
+        // Game at the top (the picture is anchored there), controller in the bottom half: on a
+        // folded phone that's the lower screen. One compact cluster, like a handheld.
+        const CGFloat game_bottom = Y + W * 9.0 / 16.0;
+        const CGFloat top = std::max(game_bottom, self.bounds.size.height * 0.5);
+        const CGFloat area_h = Y + H - top;
+        b = std::min(W * 0.62 / 6.5, area_h / 6.2);
+        const CGFloat cluster_w = b * 6.5;
+        const CGFloat cx = X + W / 2;
+        const CGFloat total_h = b * (0.72 + 0.35 + 3.1 + 0.3 + 0.8);
+        const CGFloat cy0 = top + (area_h - total_h) / 2;
+        shoulder_y = cy0 + b * 0.36;
+        const CGFloat diamond_y = cy0 + b * (0.72 + 0.35 + 1.55);
+        dpad = CGPointMake(cx - cluster_w / 2 + b * 1.55, diamond_y);
+        face = CGPointMake(cx + cluster_w / 2 - b * 1.55, diamond_y);
+        minus_y = diamond_y + b * (1.55 + 0.3 + 0.4);
+        for (int i = 0; i < 4; ++i) {
+            shoulders[i] = cx - cluster_w / 2 + b * 0.6 + i * (cluster_w - b * 1.2) / 3;
+        }
+        Layout::portrait_top_inset = static_cast<float>(Y / self.bounds.size.height);
+    } else {
+        // Landscape: the game fills the screen; d-pad and face buttons in the lower corners.
+        b = H * 0.105;
+        dpad = CGPointMake(X + b * 2.0, Y + H - b * 2.0);
+        face = CGPointMake(X + W - b * 2.0, Y + H - b * 2.0);
+        shoulder_y = dpad.y - b * 2.45;
+        minus_y = Y + H - b * 0.7;
+        shoulders[0] = dpad.x - b * 0.65;
+        shoulders[1] = dpad.x + b * 0.65;
+        shoulders[2] = face.x - b * 0.65;
+        shoulders[3] = face.x + b * 0.65;
+        Layout::portrait_top_inset = -1.0f;
+    }
+    const CGFloat o = b * 1.05; // diamond spacing
+    const CGFloat sw = b * 1.15, sh = b * 0.72;
+    const CGFloat nub = b * 0.68;
+    const CGFloat mid_x = (dpad.x + face.x) / 2;
+
     for (auto& c : _controls) {
         if (c.kind == Kind::Stick) {
-            const bool left = c.stick == VStick::Left;
-            const CGFloat cx = left ? X + s * 0.62 : X + W - b * 4.6 - s * 0.2;
-            const CGFloat cy = left ? Y + H * 0.42 + s * 0.2 : Y + H - s * 0.48;
-            const CGFloat size = left ? s : s * 0.72;
-            Place(c.view, cx, cy, size, size, true);
-            Place(c.knob, size / 2, size / 2, size * 0.42, size * 0.42, true);
+            const CGPoint p = c.stick == VStick::Left ? dpad : face;
+            c.view.transform = CGAffineTransformIdentity;
+            Place(c.view, p.x, p.y, nub, nub, true);
+            Place(c.knob, nub / 2, nub / 2, nub, nub, true);
             continue;
         }
         switch (c.button) {
-        case VButton::ButtonA: Place(c.view, fx + b * 1.05, fy, b, b, true); break;
-        case VButton::ButtonB: Place(c.view, fx, fy + b * 1.05, b, b, true); break;
-        case VButton::ButtonX: Place(c.view, fx, fy - b * 1.05, b, b, true); break;
-        case VButton::ButtonY: Place(c.view, fx - b * 1.05, fy, b, b, true); break;
-        case VButton::ButtonUp: Place(c.view, X + s * 1.45, Y + H - d * 2.6, d, d, false); break;
-        case VButton::ButtonDown: Place(c.view, X + s * 1.45, Y + H - d * 0.7, d, d, false); break;
-        case VButton::ButtonLeft: Place(c.view, X + s * 1.45 - d, Y + H - d * 1.65, d, d, false); break;
-        case VButton::ButtonRight: Place(c.view, X + s * 1.45 + d, Y + H - d * 1.65, d, d, false); break;
-        case VButton::TriggerZL: Place(c.view, X + b * 0.9, Y + b * 0.6, b * 1.5, b * 0.8, false); break;
-        case VButton::TriggerL: Place(c.view, X + b * 2.6, Y + b * 0.6, b * 1.5, b * 0.8, false); break;
-        case VButton::TriggerR: Place(c.view, X + W - b * 2.6, Y + b * 0.6, b * 1.5, b * 0.8, false); break;
-        case VButton::TriggerZR: Place(c.view, X + W - b * 0.9, Y + b * 0.6, b * 1.5, b * 0.8, false); break;
-        case VButton::ButtonMinus: Place(c.view, X + W / 2 - b * 1.2, Y + b * 0.6, b * 0.75, b * 0.75, true); break;
-        case VButton::ButtonPlus: Place(c.view, X + W / 2 + b * 1.2, Y + b * 0.6, b * 0.75, b * 0.75, true); break;
-        case VButton::StickL: Place(c.view, X + s * 0.62, Y + H * 0.42 - s * 0.55, b * 0.75, b * 0.75, true); break;
-        case VButton::StickR: Place(c.view, X + W - b * 4.6 - s * 0.2, Y + H - s * 1.05, b * 0.75, b * 0.75, true); break;
+        case VButton::ButtonA: Place(c.view, face.x + o, face.y, b, b, true); break;
+        case VButton::ButtonB: Place(c.view, face.x, face.y + o, b, b, true); break;
+        case VButton::ButtonX: Place(c.view, face.x, face.y - o, b, b, true); break;
+        case VButton::ButtonY: Place(c.view, face.x - o, face.y, b, b, true); break;
+        case VButton::ButtonUp: Place(c.view, dpad.x, dpad.y - o, b, b, true); break;
+        case VButton::ButtonDown: Place(c.view, dpad.x, dpad.y + o, b, b, true); break;
+        case VButton::ButtonLeft: Place(c.view, dpad.x - o, dpad.y, b, b, true); break;
+        case VButton::ButtonRight: Place(c.view, dpad.x + o, dpad.y, b, b, true); break;
+        case VButton::TriggerZL: Place(c.view, shoulders[0], shoulder_y, sw, sh, false); break;
+        case VButton::TriggerL: Place(c.view, shoulders[1], shoulder_y, sw, sh, false); break;
+        case VButton::TriggerR: Place(c.view, shoulders[2], shoulder_y, sw, sh, false); break;
+        case VButton::TriggerZR: Place(c.view, shoulders[3], shoulder_y, sw, sh, false); break;
+        case VButton::ButtonMinus: Place(c.view, mid_x - b * 0.85, minus_y, b * 0.8, b * 0.8, true); break;
+        case VButton::ButtonPlus: Place(c.view, mid_x + b * 0.85, minus_y, b * 0.8, b * 0.8, true); break;
         default: break;
         }
     }
+    for (auto& c : _controls) {
+        if (c.kind == Kind::Button) {
+            static_cast<UILabel*>(c.view.subviews[0]).font =
+                [UIFont systemFontOfSize:b * 0.38 weight:UIFontWeightMedium];
+        }
+    }
     [_toggle sizeToFit];
-    _toggle.center = CGPointMake(X + W / 2, Y + b * 1.35);
+    _toggle.center = portrait ? CGPointMake(X + W - _toggle.bounds.size.width, Y + H - 16)
+                              : CGPointMake(X + W / 2, Y + 18);
 }
 
 // Only the controls take touches; everything else reaches the game (touch screen).
@@ -185,17 +243,22 @@ static void Place(UIView* v, CGFloat cx, CGFloat cy, CGFloat w, CGFloat h, bool 
 }
 
 - (void)updateStick:(Control&)c touch:(UITouch*)touch {
-    const CGRect f = c.view.frame;
+    // center and bounds ignore the transform that shows the stick's deflection
+    const CGPoint center = c.view.center;
+    const CGFloat w = c.view.bounds.size.width;
     const CGPoint p = [touch locationInView:self];
-    const CGFloat r = f.size.width / 2;
-    CGFloat dx = (p.x - CGRectGetMidX(f)) / r;
-    CGFloat dy = (p.y - CGRectGetMidY(f)) / r;
+    const CGFloat r = w * 1.6;
+    CGFloat dx = (p.x - center.x) / r;
+    CGFloat dy = (p.y - center.y) / r;
     const CGFloat len = std::hypot(dx, dy);
     if (len > 1.0) {
         dx /= len;
         dy /= len;
     }
-    Place(c.knob, r + dx * r * 0.6, r + dy * r * 0.6, f.size.width * 0.42, f.size.width * 0.42, true);
+    c.view.transform = CGAffineTransformMakeTranslation(dx * w * 0.6, dy * w * 0.6);
+    if (std::hypot(dx, dy) > 0.2) {
+        c.moved = true;
+    }
     if (g_pad) {
         g_pad->SetStickPosition(0, c.stick, static_cast<float>(dx), static_cast<float>(-dy));
     }
@@ -204,26 +267,41 @@ static void Place(UIView* v, CGFloat cx, CGFloat cy, CGFloat w, CGFloat h, bool 
 - (void)press:(Control&)c touch:(UITouch*)touch {
     c.touch = touch;
     if (c.kind == Kind::Stick) {
-        [self updateStick:c touch:touch];
+        c.moved = false;
+        c.down_time = CACurrentMediaTime();
+        // Grab the stick where it is; dragging from there moves it.
+        if (g_pad) {
+            g_pad->SetStickPosition(0, c.stick, 0.0f, 0.0f);
+        }
     } else if (g_pad) {
         g_pad->SetButtonState(0, c.button, true);
-        c.view.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.45];
+        c.view.backgroundColor = PressedColor();
     }
 }
 
 - (void)release:(Control&)c {
     c.touch = nil;
     if (c.kind == Kind::Stick) {
-        const CGFloat w = c.view.frame.size.width;
-        Place(c.knob, w / 2, w / 2, w * 0.42, w * 0.42, true);
+        c.view.transform = CGAffineTransformIdentity;
         if (g_pad) {
             g_pad->SetStickPosition(0, c.stick, 0.0f, 0.0f);
+            // A short tap without moving clicks the stick (L3/R3).
+            if (!c.moved && CACurrentMediaTime() - c.down_time < 0.25) {
+                const VButton click = c.stick == VStick::Left ? VButton::StickL : VButton::StickR;
+                g_pad->SetButtonState(0, click, true);
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC),
+                               dispatch_get_main_queue(), ^{
+                                 if (g_pad) {
+                                     g_pad->SetButtonState(0, click, false);
+                                 }
+                               });
+            }
         }
     } else {
         if (g_pad) {
             g_pad->SetButtonState(0, c.button, false);
         }
-        c.view.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.18];
+        c.view.backgroundColor = FillColor();
     }
 }
 
@@ -231,7 +309,7 @@ static void Place(UIView* v, CGFloat cx, CGFloat cy, CGFloat w, CGFloat h, bool 
     for (UITouch* t in touches) {
         const CGPoint p = [t locationInView:self];
         for (auto& c : _controls) {
-            if (c.touch == nil && CGRectContainsPoint(CGRectInset(c.view.frame, -10, -10), p)) {
+            if (c.touch == nil && CGRectContainsPoint(CGRectInset(c.view.frame, -6, -6), p)) {
                 [self press:c touch:t];
                 break;
             }
