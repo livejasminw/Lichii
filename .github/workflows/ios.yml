@@ -140,7 +140,7 @@ jobs:
       - name: Package IPA
         run: |
           set -euo pipefail
-          app=$(find build/ios -maxdepth 3 -type d -name '*.app' | head -1)
+          app=build/ios/bin/Lichii.app
           test -n "$app"
           # Ad-hoc signed with the entitlements so sideloading tools carry them over.
           codesign --force --sign - "$app/Frameworks/MoltenVK.framework"
