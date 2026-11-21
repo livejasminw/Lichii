@@ -37,6 +37,7 @@
 
 #ifdef __APPLE__
 #include <unordered_set>
+#include <TargetConditionals.h>
 #include <SystemConfiguration/SystemConfiguration.h>
 #endif
 
