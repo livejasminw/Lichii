@@ -456,6 +456,11 @@ set(BOOST_INCLUDE_LIBRARIES algorithm icl pool container heap asio headers proce
 
 AddJsonPackage(boost)
 
+# Boost.Process calls wordexp, which iOS marks unavailable; Lichii only uses its pipes.
+if (IOS AND TARGET boost_process)
+    target_compile_options(boost_process PRIVATE -include "${PROJECT_SOURCE_DIR}/dist/ios/wordexp_stub.h")
+endif()
+
 # really annoying thing where boost::headers doesn't work with cpm
 # TODO(crueter) investigate
 set(BOOST_NO_HEADERS ${Boost_ADDED})
