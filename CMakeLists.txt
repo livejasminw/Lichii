@@ -567,7 +567,7 @@ endfunction()
 
 if (IOS)
     foreach(fw UIKit Metal QuartzCore CoreVideo CoreMedia Security UniformTypeIdentifiers Foundation
-            AVFoundation AudioToolbox CoreAudio CoreHaptics CoreMotion GameController)
+            AVFoundation AudioToolbox CoreAudio CoreHaptics CoreMotion GameController CFNetwork)
         find_library(${fw}_LIBRARY ${fw} REQUIRED)
         list(APPEND PLATFORM_LIBRARIES ${${fw}_LIBRARY})
     endforeach()
