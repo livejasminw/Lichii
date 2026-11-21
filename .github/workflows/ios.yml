@@ -30,7 +30,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ios-deps
-          key: ios-deps-v1-ffmpeg-n8.0-moltenvk-latest
+          key: ios-deps-v2-ffmpeg-n8.0-openssl-3.6.2-moltenvk-latest
 
       - name: MoltenVK (iOS)
         if: steps.deps-cache.outputs.cache-hit != 'true'
@@ -61,6 +61,17 @@ jobs:
             --enable-decoder=h264 --enable-decoder=vp8 --enable-decoder=vp9 \
             --enable-filter=yadif,scale
           make -j"$(sysctl -n hw.ncpu)" install
+
+      - name: OpenSSL (iOS, static)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch openssl-3.6.2 https://github.com/openssl/openssl.git "$RUNNER_TEMP/openssl"
+          cd "$RUNNER_TEMP/openssl"
+          ./Configure ios64-xcrun no-shared no-tests no-apps no-docs \
+            -miphoneos-version-min=$IOS_MIN --prefix="$DEPS/openssl" --libdir=lib
+          make -j"$(sysctl -n hw.ncpu)" build_libs
+          make install_dev
 
       - name: Locate MoltenVK.framework
         run: |
@@ -113,6 +124,11 @@ jobs:
             -DLICHII_USE_BUNDLED_FFMPEG=OFF \
             -DLICHII_USE_EXTERNAL_FFMPEG=OFF \
             -DLICHII_USE_BUNDLED_OPENSSL=OFF \
+            -DOpenSSL_FORCE_SYSTEM=ON \
+            "-DOPENSSL_ROOT_DIR=$DEPS/openssl" \
+            "-DOPENSSL_INCLUDE_DIR=$DEPS/openssl/include" \
+            "-DOPENSSL_SSL_LIBRARY=$DEPS/openssl/lib/libssl.a" \
+            "-DOPENSSL_CRYPTO_LIBRARY=$DEPS/openssl/lib/libcrypto.a" \
             "-DMOLTENVK_FRAMEWORK=$MOLTENVK_FRAMEWORK" \
             2>&1 | tee configure.log
 
@@ -124,7 +140,7 @@ jobs:
       - name: Package IPA
         run: |
           set -euo pipefail
-          app=$(find build/ios -maxdepth 3 -type d -name Lichii.app | head -1)
+          app=$(find build/ios -maxdepth 3 -type d -name '*.app' | head -1)
           test -n "$app"
           # Ad-hoc signed with the entitlements so sideloading tools carry them over.
           codesign --force --sign - "$app/Frameworks/MoltenVK.framework"

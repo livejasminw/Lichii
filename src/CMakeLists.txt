@@ -336,7 +336,9 @@ endfunction()
 
 if (LICHII_CMD)
     add_subdirectory(lichii_cmd)
-    set_target_properties(lichii-cmd PROPERTIES OUTPUT_NAME "eden-cli")
+    if (NOT IOS)
+        set_target_properties(lichii-cmd PROPERTIES OUTPUT_NAME "eden-cli")
+    endif()
     lichii_add_version_info(lichii-cmd "Lichii command line" eden-cli.exe)
 endif()
 
