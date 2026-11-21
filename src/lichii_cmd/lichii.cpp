@@ -703,8 +703,9 @@ static bool EnsureIosJit() {
     }
     if (!Common::IosJit::Prepare()) {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Lichii",
-                                 "JIT was enabled but preparing its memory failed. Check that "
-                                 "StikDebug used the universal.js script, then try again.",
+                                 "JIT was enabled but StikDebug didn't finish preparing its "
+                                 "memory. Fully close Lichii (swipe it away), then open it and "
+                                 "try again. Make sure StikDebug uses the universal.js script.",
                                  nullptr);
         return false;
     }

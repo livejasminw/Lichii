@@ -23,7 +23,7 @@ struct Region {
 /// Size of every code cache slot the pool hands out.
 constexpr std::size_t SlotSize = 64 * 1024 * 1024;
 /// Number of slots reserved when JIT is prepared (one per emulated core, with room to spare).
-constexpr std::size_t SlotCount = 12;
+constexpr std::size_t SlotCount = 8;
 
 /// Whether a debugger has marked this process CS_DEBUGGED.
 bool IsDebugged();

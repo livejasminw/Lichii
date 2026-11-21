@@ -16,6 +16,9 @@
 #include <sys/mman.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
+#include <csetjmp>
+#include <signal.h>
+#include <libkern/OSCacheControl.h>
 
 #include <fmt/format.h>
 
@@ -79,6 +82,37 @@ std::uint8_t* MapWritableAlias(std::uint8_t* executable, std::size_t size) {
     return reinterpret_cast<std::uint8_t*>(alias);
 }
 
+sigjmp_buf probe_jump;
+
+void ProbeFault(int) {
+    siglongjmp(probe_jump, 1);
+}
+
+/// Runs a single `ret` from the start of the pool. An unprepared region faults; that is caught
+/// here instead of crashing the first game thread.
+bool Probe() {
+    constexpr std::uint32_t RET = 0xd65f03c0;
+    *reinterpret_cast<volatile std::uint32_t*>(pool_w) = RET;
+    sys_icache_invalidate(pool_x, sizeof(RET));
+
+    struct sigaction action{};
+    struct sigaction old_bus{};
+    struct sigaction old_segv{};
+    action.sa_handler = ProbeFault;
+    sigemptyset(&action.sa_mask);
+    sigaction(SIGBUS, &action, &old_bus);
+    sigaction(SIGSEGV, &action, &old_segv);
+    bool ok = false;
+    if (sigsetjmp(probe_jump, 1) == 0) {
+        reinterpret_cast<void (*)()>(pool_x)();
+        ok = true;
+    }
+    sigaction(SIGBUS, &old_bus, nullptr);
+    sigaction(SIGSEGV, &old_segv, nullptr);
+    *reinterpret_cast<volatile std::uint32_t*>(pool_w) = 0;
+    return ok;
+}
+
 } // namespace
 
 bool IsDebugged() {
@@ -123,10 +157,20 @@ bool Prepare() {
              txm ? "TXM, universal.js" : "no TXM");
 
     if (txm) {
-        // The debugger allocates the executable mapping and prepares it; then it detaches.
-        auto* executable = static_cast<std::uint8_t*>(LichiiJIT26PrepareRegion(nullptr, size));
-        if (executable == nullptr) {
-            LOG_CRITICAL(Common, "iOS JIT: StikDebug did not prepare a region");
+        // Map the executable region ourselves (a debugger-allocated one at 0x7000000000 once came
+        // back unprepared), have StikDebug prepare it, then detach.
+        auto* region = static_cast<std::uint8_t*>(
+            mmap(nullptr, size, PROT_READ | PROT_EXEC, MAP_ANON | MAP_PRIVATE, -1, 0));
+        if (region == MAP_FAILED) {
+            LOG_CRITICAL(Common, "iOS JIT: mmap of the executable region failed: {}",
+                         std::strerror(errno));
+            LichiiJIT26Detach();
+            return false;
+        }
+        auto* executable = static_cast<std::uint8_t*>(LichiiJIT26PrepareRegion(region, size));
+        if (executable != region) {
+            LOG_CRITICAL(Common, "iOS JIT: StikDebug did not prepare the region ({} -> {})",
+                         fmt::ptr(region), fmt::ptr(executable));
             LichiiJIT26Detach();
             return false;
         }
@@ -161,6 +205,10 @@ bool Prepare() {
         pool_x = reinterpret_cast<std::uint8_t*>(executable);
     }
 
+    if (!Probe()) {
+        LOG_CRITICAL(Common, "iOS JIT: the code cache can't run code; it wasn't prepared");
+        return false;
+    }
     LOG_INFO(Common, "iOS JIT: ready (executable {}, writable {})", fmt::ptr(pool_x),
              fmt::ptr(pool_w));
     ready = true;
