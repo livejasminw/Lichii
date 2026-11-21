@@ -112,6 +112,10 @@ std::vector<Network::NetworkInterface> GetAvailableNetworkInterfaces(bool includ
 /// BSD names of the Wi-Fi interfaces. getifaddrs reports them as IFT_ETHER, so only
 /// SystemConfiguration can tell them apart from wired ones.
 static std::unordered_set<std::string> GetWifiInterfaceNames() {
+#if TARGET_OS_IPHONE
+    // SCNetworkInterface is macOS-only; on iPhone and iPad Wi-Fi is en0.
+    return {"en0"};
+#else
     std::unordered_set<std::string> names;
     const CFArrayRef interfaces = SCNetworkInterfaceCopyAll();
     if (interfaces == nullptr) {
@@ -133,6 +137,7 @@ static std::unordered_set<std::string> GetWifiInterfaceNames() {
     }
     CFRelease(interfaces);
     return names;
+#endif
 }
 #endif
 
