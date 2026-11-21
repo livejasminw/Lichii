@@ -45,6 +45,14 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Games can use the microphone, as on the console. You can say no; they then hear silence.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Some games use a camera, as on the console. You can say no.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Lichii uses Bluetooth for game controllers such as Joy-Con and Pro Controllers.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Lichii uses the local network for motion input servers and local wireless play.</string>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>stikdebug</string>
