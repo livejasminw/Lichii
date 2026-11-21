@@ -58,6 +58,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <mutex>
 #include <random>
 #include <utility>
@@ -639,10 +640,16 @@ public:
         if (fd >= 0) {
             shm_unlink(shm_name);
         } else {
-            char template_path[] = "/tmp/eden_mem_XXXXXX";
-            fd = mkstemp(template_path);
+            // The sandbox on iOS has no /tmp; TMPDIR is the app's own tmp folder.
+            const char* tmpdir = std::getenv("TMPDIR");
+            std::string template_path = std::string{tmpdir && *tmpdir ? tmpdir : "/tmp/"};
+            if (template_path.back() != '/') {
+                template_path += '/';
+            }
+            template_path += "eden_mem_XXXXXX";
+            fd = mkstemp(template_path.data());
             if (fd >= 0) {
-                unlink(template_path);
+                unlink(template_path.c_str());
             }
         }
 #elif defined(__managarm__)

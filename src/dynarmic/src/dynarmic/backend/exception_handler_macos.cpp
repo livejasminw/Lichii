@@ -281,6 +281,10 @@ void ExceptionHandler::Register(X64::BlockOfCode& code) {
     impl = std::make_unique<Impl>(code_begin, code_end);
 }
 #elif defined(ARCHITECTURE_arm64)
+void ExceptionHandler::Register(std::uint32_t* executable, std::size_t size) {
+    const u64 code_begin = std::bit_cast<u64>(executable);
+    impl = std::make_unique<Impl>(code_begin, code_begin + size);
+}
 void ExceptionHandler::Register(oaknut::CodeBlock& mem, std::size_t size) {
     const u64 code_begin = std::bit_cast<u64>(mem.ptr());
     const u64 code_end = code_begin + size;

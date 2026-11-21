@@ -3,6 +3,9 @@
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include "common/settings.h"
 #include "core/arm/dynarmic/arm_dynarmic.h"
 #include "core/arm/dynarmic/arm_dynarmic_32.h"
@@ -189,7 +192,10 @@ void ArmDynarmic32::MakeJit(Common::PageTable* page_table) {
     config.enable_cycle_counting = !m_uses_wall_clock;
 
     // Code cache size
-#if defined(ARCHITECTURE_arm64) || defined(__sun__) || defined(__NetBSD__) || defined(__DragonFly__) || defined(__OpenBSD__)
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // One slot of the code cache pool prepared through StikDebug (Common::IosJit::SlotSize).
+    config.code_cache_size = std::uint32_t(64_MiB);
+#elif defined(ARCHITECTURE_arm64) || defined(__sun__) || defined(__NetBSD__) || defined(__DragonFly__) || defined(__OpenBSD__)
     config.code_cache_size = std::uint32_t(128_MiB);
 #else
     config.code_cache_size = std::uint32_t(512_MiB);

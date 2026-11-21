@@ -32,6 +32,11 @@
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+#include <CoreFoundation/CoreFoundation.h>
+#include <unistd.h>
+#include "common/ios_jit.h"
+#endif
 
 #include <fmt/ostream.h>
 
@@ -587,6 +592,69 @@ static std::string PickGameFromDocuments() {
 }
 #endif
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+static bool AskYesNo(const char* message, const char* yes, const char* no) {
+    const SDL_MessageBoxButtonData buttons[] = {
+        {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, no},
+        {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, yes},
+    };
+    const SDL_MessageBoxData data{SDL_MESSAGEBOX_INFORMATION, nullptr, "Lichii", message, 2,
+                                  buttons, nullptr};
+    int choice = 0;
+    return SDL_ShowMessageBox(&data, &choice) && choice == 1;
+}
+
+// The CPU JIT needs StikDebug: wait until it has attached, then reserve the code cache (on TXM
+// devices that runs the universal.js handshake and detaches the debugger).
+static bool EnsureIosJit() {
+    if (Common::IosJit::IsReady()) {
+        return true;
+    }
+    if (!Common::IosJit::IsDebugged()) {
+        if (!AskYesNo("Lichii needs JIT to run games. Open StikDebug to enable it? Come back to "
+                      "Lichii when StikDebug says JIT is enabled.",
+                      "Open StikDebug", "Cancel")) {
+            return false;
+        }
+        char bundle[256]{};
+        const CFStringRef bundle_id = CFBundleGetIdentifier(CFBundleGetMainBundle());
+        if (bundle_id != nullptr) {
+            CFStringGetCString(bundle_id, bundle, sizeof(bundle), kCFStringEncodingUTF8);
+        }
+        std::string url = fmt::format("stikdebug://enable-jit?bundle-id={}&pid={}", bundle,
+                                      static_cast<int>(getpid()));
+        if (Common::IosJit::HasTXM()) {
+            url += "&script-name=universal.js";
+        }
+        LOG_INFO(Frontend, "iOS JIT: opening {}", url);
+        if (!SDL_OpenURL(url.c_str())) {
+            LOG_ERROR(Frontend, "iOS JIT: could not open StikDebug: {}", SDL_GetError());
+        }
+        // Keep the run loop going while StikDebug attaches (the app is suspended meanwhile).
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(3);
+        while (!Common::IosJit::IsDebugged() && std::chrono::steady_clock::now() < deadline) {
+            SDL_PumpEvents();
+            SDL_Delay(100);
+        }
+    }
+    if (!Common::IosJit::IsDebugged()) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Lichii",
+                                 "JIT isn't enabled. In StikDebug, enable JIT for Lichii (with "
+                                 "the universal.js script on iOS 26), then open the game again.",
+                                 nullptr);
+        return false;
+    }
+    if (!Common::IosJit::Prepare()) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Lichii",
+                                 "JIT was enabled but preparing its memory failed. Check that "
+                                 "StikDebug used the universal.js script, then try again.",
+                                 nullptr);
+        return false;
+    }
+    return true;
+}
+#endif
+
 extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     // SDL calls SDL_AppIterate back to back by default, which kept a host core at 100% polling
     // input; 240 Hz is plenty for input and the key script.
@@ -677,6 +745,9 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 #if defined(__APPLE__) && TARGET_OS_IPHONE
     if (lp.filepath.empty()) {
         lp.filepath = PickGameFromDocuments();
+    }
+    if (!lp.filepath.empty() && !EnsureIosJit()) {
+        return SDL_APP_FAILURE;
     }
 #endif
     if (lp.filepath.empty()) {

@@ -48,12 +48,16 @@ AddressSpace::AddressSpace(std::size_t code_cache_size, std::optional<std::uintp
     : ir_block{IR::LocationDescriptor{0}}
     , code_cache_size(code_cache_size)
     , mem(code_cache_size)
-    , code(mem.ptr(), mem.ptr())
+    , code(WritePtr(), mem.ptr())
     , fastmem_manager(exception_handler, fastmem_arena)
 {
     ASSERT(code_cache_size <= 128 * 1024 * 1024 && "code_cache_size > 128 MiB not currently supported");
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    exception_handler.Register(mem.ptr(), code_cache_size);
+#else
     exception_handler.Register(mem, code_cache_size);
+#endif
     exception_handler.SetFastmemCallback([this](u64 host_pc) {
         return FastmemCallback(host_pc);
     });
@@ -169,7 +173,7 @@ void AddressSpace::Link(EmittedBlockInfo& block_info) {
     using namespace oaknut::util;
 
     for (auto [ptr_offset, target] : block_info.relocations) {
-        CodeGenerator c{mem.ptr(), mem.ptr()};
+        CodeGenerator c{WritePtr(), mem.ptr()};
         c.set_xptr(reinterpret_cast<u32*>(block_info.entry_point + ptr_offset));
 
         switch (target) {
@@ -315,7 +319,7 @@ void AddressSpace::LinkBlockLinks(const CodePtr entry_point, const CodePtr targe
     using namespace oaknut::util;
 
     for (auto [ptr_offset, type] : block_relocations_list) {
-        CodeGenerator c{mem.ptr(), mem.ptr()};
+        CodeGenerator c{WritePtr(), mem.ptr()};
         c.set_xptr(reinterpret_cast<u32*>(entry_point + ptr_offset));
 
         switch (type) {

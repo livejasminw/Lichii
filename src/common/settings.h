@@ -5,6 +5,16 @@
 
 #pragma once
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+// iOS kills crashing apps without a crash line, so every log line goes to disk at once.
+#define LICHII_LOG_FLUSH_LINE_DEFAULT true
+#else
+#define LICHII_LOG_FLUSH_LINE_DEFAULT false
+#endif
+
 #include <algorithm>
 #include <array>
 #include <map>
@@ -1085,7 +1095,7 @@ struct Values {
 
     // Miscellaneous
     Setting<std::string> log_filter{linkage, "*:Info", "log_filter", Category::Miscellaneous};
-    Setting<bool> log_flush_line{linkage, false, "flush_line", Category::Miscellaneous, Specialization::Default, true, true};
+    Setting<bool> log_flush_line{linkage, LICHII_LOG_FLUSH_LINE_DEFAULT, "flush_line", Category::Miscellaneous, Specialization::Default, true, true};
     Setting<bool> censor_username{linkage, true, "censor_username", Category::Miscellaneous};
     Setting<bool> first_launch{linkage, true, "first_launch", Category::Miscellaneous};
     // The values the recommended settings (common/recommended_settings.h) replaced.

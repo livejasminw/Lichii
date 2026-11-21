@@ -13,6 +13,12 @@
 
 #include "common/common_types.h"
 #include <oaknut/code_block.hpp>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+#include "dynarmic/backend/arm64/ios_code_block.h"
+#endif
 #include <oaknut/oaknut.hpp>
 #include "common/container/unordered_map.h"
 #include "common/container/unordered_set.h"
@@ -89,7 +95,13 @@ protected:
     IR::Block ir_block;
     const std::size_t code_cache_size;
     u64 cache_generation = 0;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    IosCodeBlock mem;
+    std::uint32_t* WritePtr() const { return mem.wptr(); }
+#else
     oaknut::CodeBlock mem;
+    std::uint32_t* WritePtr() const { return mem.ptr(); }
+#endif
     oaknut::CodeGenerator code;
 
     // A IR::LocationDescriptor will have one current CodePtr.

@@ -66,6 +66,7 @@ public:
     void Register(X64::BlockOfCode& code);
 #elif defined(ARCHITECTURE_arm64)
     void Register(oaknut::CodeBlock& mem, std::size_t mem_size);
+    void Register(std::uint32_t* executable, std::size_t mem_size);
 #elif defined(ARCHITECTURE_riscv64)
     void Register(RV64::CodeBlock& mem, std::size_t mem_size);
 #elif defined(ARCHITECTURE_loongarch64)

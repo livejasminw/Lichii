@@ -21,6 +21,9 @@ void ExceptionHandler::Register(X64::BlockOfCode&) {
     // Do nothing
 }
 #elif defined(ARCHITECTURE_arm64)
+void ExceptionHandler::Register(std::uint32_t*, std::size_t) {
+    // Do nothing
+}
 void ExceptionHandler::Register(oaknut::CodeBlock&, std::size_t) {
     // Do nothing
 }
