@@ -1,0 +1,147 @@
+name: iOS build
+
+on:
+  push:
+    branches: [ios]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 300
+    env:
+      DEPS: ${{ github.workspace }}/ios-deps
+      IOS_MIN: "17.0"
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Host tools
+        run: brew install ninja glslang pkg-config ccache
+
+      - name: Cache iOS dependencies
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: ios-deps
+          key: ios-deps-v1-ffmpeg-n8.0-moltenvk-latest
+
+      - name: MoltenVK (iOS)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$DEPS/moltenvk" && cd "$DEPS/moltenvk"
+          gh release download -R KhronosGroup/MoltenVK -p 'MoltenVK-ios.tar'
+          tar xf MoltenVK-ios.tar && rm MoltenVK-ios.tar
+
+      - name: FFmpeg (iOS, static)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch n8.0 https://github.com/FFmpeg/FFmpeg.git "$RUNNER_TEMP/ffmpeg"
+          cd "$RUNNER_TEMP/ffmpeg"
+          sdk=$(xcrun --sdk iphoneos --show-sdk-path)
+          cc="$(xcrun --sdk iphoneos -f clang)"
+          flags="-arch arm64 -isysroot $sdk -miphoneos-version-min=$IOS_MIN"
+          ./configure --prefix="$DEPS/ffmpeg" \
+            --enable-cross-compile --target-os=darwin --arch=arm64 \
+            --cc="$cc" --as="$cc" --sysroot="$sdk" \
+            --extra-cflags="$flags" --extra-ldflags="$flags" \
+            --enable-static --disable-shared --enable-pic \
+            --disable-programs --disable-doc --disable-everything \
+            --disable-avdevice --disable-avformat --disable-swresample --disable-network \
+            --disable-videotoolbox --disable-audiotoolbox --disable-iconv \
+            --disable-zlib --disable-bzlib --disable-lzma --disable-securetransport \
+            --enable-decoder=h264 --enable-decoder=vp8 --enable-decoder=vp9 \
+            --enable-filter=yadif,scale
+          make -j"$(sysctl -n hw.ncpu)" install
+
+      - name: Locate MoltenVK.framework
+        run: |
+          set -euo pipefail
+          fw=$(find "$DEPS/moltenvk" -type d -name MoltenVK.framework -path '*ios-arm64/*' | grep -v simulator | head -1)
+          test -n "$fw"
+          echo "MOLTENVK_FRAMEWORK=$fw" >> "$GITHUB_ENV"
+          echo "Using $fw"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .cache/cpm
+            ~/Library/Caches/ccache
+          key: ios-cpm-ccache-${{ hashFiles('cpmfile.json') }}-${{ github.sha }}
+          restore-keys: ios-cpm-ccache-${{ hashFiles('cpmfile.json') }}-
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          export FFMPEG_DIR="$DEPS/ffmpeg"
+          cmake -S . -B build/ios -G Ninja \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=$IOS_MIN \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DCPM_SOURCE_CACHE="$PWD/.cache/cpm" \
+            -DCPMUTIL_FORCE_BUNDLED=ON \
+            -DENABLE_QT=OFF \
+            -DLICHII_CMD=ON \
+            -DLICHII_ROOM=OFF \
+            -DLICHII_ROOM_STANDALONE=OFF \
+            -DLICHII_TESTS=OFF \
+            -DBUILD_TESTING=OFF \
+            -DENABLE_WEB_SERVICE=OFF \
+            -DENABLE_UPDATE_CHECKER=OFF \
+            -DENABLE_LIBUSB=OFF \
+            -DENABLE_WERROR=OFF \
+            -DENABLE_LSFG=OFF \
+            -DENABLE_RESHADE=OFF \
+            -DUSE_DISCORD_PRESENCE=OFF \
+            -DLICHII_DISABLE_LLVM=ON \
+            -DLICHII_USE_BUNDLED_MOLTENVK=OFF \
+            -DLICHII_USE_BUNDLED_SDL3=OFF \
+            -DLICHII_USE_BUNDLED_FFMPEG=OFF \
+            -DLICHII_USE_EXTERNAL_FFMPEG=OFF \
+            -DLICHII_USE_BUNDLED_OPENSSL=OFF \
+            "-DMOLTENVK_FRAMEWORK=$MOLTENVK_FRAMEWORK" \
+            2>&1 | tee configure.log
+
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build build/ios --target lichii-cmd --parallel "$(sysctl -n hw.ncpu)" -- -k 0 2>&1 | tee build.log
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          app=$(find build/ios -maxdepth 3 -type d -name Lichii.app | head -1)
+          test -n "$app"
+          # Ad-hoc signed with the entitlements so sideloading tools carry them over.
+          codesign --force --sign - "$app/Frameworks/MoltenVK.framework"
+          codesign --force --sign - --entitlements dist/ios/lichii.entitlements "$app"
+          rm -rf Payload && mkdir Payload && cp -R "$app" Payload/
+          zip -qry Lichii.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: Lichii-ios-${{ github.run_number }}
+          path: Lichii.ipa
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ github.run_number }}
+          path: |
+            configure.log
+            build.log
+            build/ios/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore

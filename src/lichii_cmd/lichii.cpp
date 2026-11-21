@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <iterator>
 #include <fstream>
@@ -28,6 +29,9 @@
 #endif
 #define SDL_MAIN_USE_CALLBACKS 1
 #include <SDL3/SDL_main.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 
 #include <fmt/ostream.h>
 
@@ -535,6 +539,54 @@ static bool ReplayGpuTrace(Core::System& system, int argc, char** argv) {
     return true;
 }
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+// iOS has no command line: list the games in Documents (and Documents/games) and let the
+// player pick one. Files are copied in with the Files app.
+static std::string PickGameFromDocuments() {
+    static constexpr std::array extensions{".nsp", ".xci", ".nup", ".nca", ".nro", ".nso"};
+    const auto root = Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir);
+    std::vector<std::filesystem::path> games;
+    for (const auto& dir : {root, root / "games"}) {
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            auto ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+            if (std::find(extensions.begin(), extensions.end(), ext) != extensions.end()) {
+                games.push_back(entry.path());
+            }
+        }
+    }
+    std::sort(games.begin(), games.end());
+    if (games.empty()) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Lichii",
+                                 "No games found. In the Files app, open On My iPhone > Lichii and "
+                                 "add your .nsp, .xci or .nup files there or in a \"games\" folder. "
+                                 "Put prod.keys and title.keys in the \"keys\" folder.",
+                                 nullptr);
+        return {};
+    }
+    if (games.size() > 16) {
+        games.resize(16);
+    }
+    std::vector<std::string> names;
+    std::vector<SDL_MessageBoxButtonData> buttons;
+    names.reserve(games.size());
+    for (const auto& game : games) {
+        names.push_back(game.filename().string());
+    }
+    for (int i = 0; i < static_cast<int>(names.size()); ++i) {
+        buttons.push_back({0, i, names[i].c_str()});
+    }
+    const SDL_MessageBoxData data{SDL_MESSAGEBOX_INFORMATION, nullptr, "Lichii", "Choose a game",
+                                  static_cast<int>(buttons.size()), buttons.data(), nullptr};
+    int choice = -1;
+    if (!SDL_ShowMessageBox(&data, &choice) || choice < 0) {
+        return {};
+    }
+    return Common::FS::PathToUTF8String(games[choice]);
+}
+#endif
+
 extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     // SDL calls SDL_AppIterate back to back by default, which kept a host core at 100% polling
     // input; 240 Hz is plenty for input and the key script.
@@ -622,6 +674,11 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
         return EditNup(lp) ? SDL_APP_SUCCESS : SDL_APP_FAILURE;
     }
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    if (lp.filepath.empty()) {
+        lp.filepath = PickGameFromDocuments();
+    }
+#endif
     if (lp.filepath.empty()) {
         LOG_CRITICAL(Frontend, "Failed to load ROM: No ROM specified");
         return SDL_APP_FAILURE;

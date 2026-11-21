@@ -274,7 +274,7 @@ endif()
 option(LICHII_USE_BUNDLED_SIRIT "Download bundled sirit" ${BUNDLED_SIRIT_DEFAULT})
 
 # FreeBSD 15+ has libusb, versions below should disable it
-cmake_dependent_option(ENABLE_LIBUSB "Enable the use of LibUSB" ON "WIN32 OR LINUX OR FREEBSD OR APPLE" OFF)
+cmake_dependent_option(ENABLE_LIBUSB "Enable the use of LibUSB" ON "WIN32 OR LINUX OR FREEBSD OR (APPLE AND NOT IOS)" OFF)
 
 cmake_dependent_option(ENABLE_OPENGL "Enable OpenGL" ON "NOT (WIN32 AND ARCHITECTURE_arm64) AND NOT APPLE AND NOT ANDROID" OFF)
 mark_as_advanced(FORCE ENABLE_OPENGL)
@@ -296,7 +296,7 @@ option(LICHII_LEGACY "Apply patches that improve compatibility with older GPUs (
 
 option(NIGHTLY_BUILD "Use Nightly qualifiers in the update checker and build metadata" OFF)
 
-cmake_dependent_option(LICHII_ROOM "Enable dedicated room functionality" ON "NOT ANDROID" OFF)
+cmake_dependent_option(LICHII_ROOM "Enable dedicated room functionality" ON "NOT ANDROID AND NOT IOS" OFF)
 cmake_dependent_option(LICHII_ROOM_STANDALONE "Enable standalone room executable" ON "LICHII_ROOM" OFF)
 
 cmake_dependent_option(LICHII_CMD "Compile the eden-cli executable" ON "NOT ANDROID" OFF)
@@ -560,7 +560,13 @@ endfunction()
 # Put these BEFORE EXTERNALS or Boost WILL die
 # =============================================
 
-if (APPLE)
+if (IOS)
+    foreach(fw UIKit Metal QuartzCore CoreVideo CoreMedia Security UniformTypeIdentifiers Foundation
+            AVFoundation AudioToolbox CoreAudio CoreHaptics CoreMotion GameController)
+        find_library(${fw}_LIBRARY ${fw} REQUIRED)
+        list(APPEND PLATFORM_LIBRARIES ${${fw}_LIBRARY})
+    endforeach()
+elseif (APPLE)
     foreach(fw Carbon Metal Cocoa IOKit CoreVideo CoreMedia Security UniformTypeIdentifiers Foundation)
         find_library(${fw}_LIBRARY ${fw} REQUIRED)
         list(APPEND PLATFORM_LIBRARIES ${${fw}_LIBRARY})

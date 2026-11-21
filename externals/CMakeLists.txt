@@ -457,7 +457,12 @@ if (LICHII_CRASH_DUMPS AND NOT TARGET libbreakpad_client)
     endif()
 endif()
 
-if (APPLE)
+if (IOS)
+    # The bundled MoltenVK is macOS-only; iOS builds pass MOLTENVK_FRAMEWORK (MoltenVK.framework).
+    if (NOT MOLTENVK_FRAMEWORK)
+        message(FATAL_ERROR "iOS builds need -DMOLTENVK_FRAMEWORK=<path to an iOS MoltenVK.framework>")
+    endif()
+elseif (APPLE)
     # moltenvk
     if (NOT LICHII_USE_BUNDLED_MOLTENVK)
         find_library(MOLTENVK_LIBRARY MoltenVK)

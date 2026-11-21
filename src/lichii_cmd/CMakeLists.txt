@@ -71,6 +71,26 @@ endif()
 
 create_target_directory_groups(lichii-cmd)
 
+if (IOS)
+    # SDL3 provides the UIKit app delegate; this target becomes Lichii.app.
+    set_target_properties(lichii-cmd PROPERTIES
+        OUTPUT_NAME Lichii
+        MACOSX_BUNDLE ON
+        MACOSX_BUNDLE_INFO_PLIST "${PROJECT_SOURCE_DIR}/dist/ios/Info.plist.in"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.livejasminw.lichii"
+        MACOSX_BUNDLE_EXECUTABLE_NAME Lichii
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1"
+        MACOSX_BUNDLE_BUNDLE_VERSION "1"
+        BUILD_WITH_INSTALL_RPATH ON
+        INSTALL_RPATH "@executable_path/Frameworks")
+    target_link_libraries(lichii-cmd PRIVATE "-framework UIKit")
+    add_custom_command(TARGET lichii-cmd POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:lichii-cmd>/Frameworks"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${MOLTENVK_FRAMEWORK}"
+            "$<TARGET_BUNDLE_DIR:lichii-cmd>/Frameworks/MoltenVK.framework"
+        VERBATIM)
+endif()
+
 if (HAS_HYPERVISOR)
     add_custom_command(TARGET lichii-cmd POST_BUILD
         COMMAND /usr/bin/codesign --force --sign -

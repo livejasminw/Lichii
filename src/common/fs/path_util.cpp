@@ -28,6 +28,7 @@
 #endif
 
 #ifdef __APPLE__
+#include <TargetConditionals.h>
 #include <sys/param.h> // Used in GetBundleDirectory()
 
 // CFURL contains __attribute__ directives that gcc does not know how to parse, so we need to just
@@ -132,6 +133,12 @@ public:
         LEGACY_PATH(Suyu, SUYU)
         LEGACY_PATH(LegacyEden, EDEN_LEGACY)
 #undef LEGACY_PATH
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+        // Documents is what the Files app shows, so keys, firmware and games go there.
+        portable = true;
+        eden_path = GetHomeDirectory() / "Documents";
+        eden_path_cache = GetHomeDirectory() / "Library" / "Caches";
+        eden_path_config = eden_path / CONFIG_DIR;
 #elif __ANDROID__
         portable = true;
         ASSERT(!eden_path.empty());
