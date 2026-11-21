@@ -142,17 +142,22 @@ jobs:
           set -euo pipefail
           app=build/ios/bin/Lichii.app
           test -n "$app"
-          # Ad-hoc signed with the entitlements so sideloading tools carry them over.
           codesign --force --sign - "$app/Frameworks/MoltenVK.framework"
-          codesign --force --sign - --entitlements dist/ios/lichii.entitlements "$app"
+          # Plain build: no entitlements, so any signer or certificate can install it.
+          codesign --force --sign - "$app"
           rm -rf Payload && mkdir Payload && cp -R "$app" Payload/
           zip -qry Lichii.ipa Payload
+          # Entitlements build (debugging for JIT, more memory): needs a signer that keeps them.
+          codesign --force --sign - --entitlements dist/ios/lichii.entitlements Payload/*.app
+          zip -qry Lichii-entitlements.ipa Payload
 
       - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: Lichii-ios-${{ github.run_number }}
-          path: Lichii.ipa
+          path: |
+            Lichii.ipa
+            Lichii-entitlements.ipa
 
       - uses: actions/upload-artifact@v4
         if: always()
