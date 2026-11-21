@@ -3,6 +3,9 @@
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -2519,6 +2522,14 @@ void Device::CollectPhysicalMemoryInfo() {
                         value);
         }
     }
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // iOS reports most of the system memory as one 8 GiB heap, but the whole app may only use
+    // about 6 GiB before it is killed, and guest memory, the JIT and the CPU side need most of it.
+    if (heap_size_limit == 0) {
+        heap_size_limit = 1536_MiB;
+        LOG_INFO(Render_Vulkan, "iOS: device-local heaps limited to {} MiB", heap_size_limit >> 20);
+    }
+#endif
     const auto limit = [this](u64 size) {
         return heap_size_limit != 0 ? (std::min)(size, heap_size_limit) : size;
     };
@@ -2558,6 +2569,12 @@ void Device::CollectPhysicalMemoryInfo() {
                      main_heap_budget >> 20);
         }
     }
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    if (is_integrated) {
+        device_access_memory = (std::min)(device_access_memory, heap_size_limit);
+        return;
+    }
+#endif
     if (is_integrated) {
         const s64 available_memory = static_cast<s64>(device_access_memory - device_initial_usage);
         const u64 memory_size = Settings::values.vram_usage_mode.GetValue() == Settings::VramUsageMode::Aggressive ? 6_GiB : 4_GiB;

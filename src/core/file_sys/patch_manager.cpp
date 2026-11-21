@@ -3,6 +3,9 @@
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -1421,6 +1424,14 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
         if (patch.title_id != title_id || patch.module != name) {
             continue;
         }
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        // Higher resolution and a doubled texture pool cost memory a phone doesn't have.
+        if (patch.name == MAX_RESOLUTION_NAME || patch.name == "Texture Pool x2 (built-in)") {
+            LOG_INFO(Loader, "    - Skipping \"{}\": needs more memory than iOS allows",
+                     patch.name);
+            continue;
+        }
+#endif
         if (!patch.requires_patch.empty() &&
             std::ranges::find(applied, patch.requires_patch) == applied.end()) {
             continue;
