@@ -42,6 +42,7 @@
 #include <thread>
 #include <unistd.h>
 #include "common/ios_jit.h"
+#include "lichii_cmd/ios/touch_controls.h"
 #endif
 
 #include <fmt/ostream.h>
@@ -844,6 +845,9 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
         LOG_CRITICAL(Frontend, "Invalid renderer backend");
         return SDL_APP_FAILURE;
     }
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    IosControls::Attach(&state->input_subsystem);
+#endif
 
 #ifdef _WIN32
     Common::Windows::SetCurrentTimerResolutionToMaximum();

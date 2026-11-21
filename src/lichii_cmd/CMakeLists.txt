@@ -82,7 +82,9 @@ if (IOS)
         MACOSX_BUNDLE_BUNDLE_VERSION "1"
         BUILD_WITH_INSTALL_RPATH ON
         INSTALL_RPATH "@executable_path/Frameworks")
-    target_link_libraries(lichii-cmd PRIVATE "-framework UIKit")
+    target_sources(lichii-cmd PRIVATE ios/touch_controls.mm ios/touch_controls.h)
+    set_source_files_properties(ios/touch_controls.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(lichii-cmd PRIVATE "-framework UIKit" "-framework GameController")
     add_custom_command(TARGET lichii-cmd POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:lichii-cmd>/Frameworks"
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${MOLTENVK_FRAMEWORK}"
