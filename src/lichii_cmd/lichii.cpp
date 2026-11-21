@@ -34,6 +34,12 @@
 #endif
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 #include <CoreFoundation/CoreFoundation.h>
+#include <execinfo.h>
+#include <fcntl.h>
+#include <mach/mach.h>
+#include <os/proc.h>
+#include <signal.h>
+#include <thread>
 #include <unistd.h>
 #include "common/ios_jit.h"
 #endif
@@ -604,6 +610,51 @@ static bool AskYesNo(const char* message, const char* yes, const char* no) {
     return SDL_ShowMessageBox(&data, &choice) && choice == 1;
 }
 
+// iOS ends a process over its memory limit (jetsam) without a signal, and the crash log in
+// Settings lists only the exception. Log the footprint once a second, and write fatal signals
+// with a backtrace to crash.txt next to the log.
+static int g_crash_fd = -1;
+
+static void IosFatalSignal(int sig, siginfo_t* info, void*) {
+    if (g_crash_fd >= 0) {
+        char line[160];
+        const int len = std::snprintf(line, sizeof(line), "Fatal signal %d (code %d) at address %p\n",
+                                      sig, info ? info->si_code : 0, info ? info->si_addr : nullptr);
+        if (len > 0) {
+            (void)write(g_crash_fd, line, static_cast<size_t>(len));
+        }
+        void* frames[64];
+        const int count = backtrace(frames, 64);
+        backtrace_symbols_fd(frames, count, g_crash_fd);
+        fsync(g_crash_fd);
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void StartIosDiagnostics() {
+    const auto crash_path = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "crash.txt";
+    g_crash_fd = open(Common::FS::PathToUTF8String(crash_path).c_str(),
+                      O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    struct sigaction action{};
+    action.sa_sigaction = IosFatalSignal;
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    for (const int sig : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP}) {
+        sigaction(sig, &action, nullptr);
+    }
+    std::thread([] {
+        for (;;) {
+            task_vm_info_data_t vm{};
+            mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+            const bool ok = task_info(mach_task_self(), TASK_VM_INFO,
+                                      reinterpret_cast<task_info_t>(&vm), &count) == KERN_SUCCESS;
+            LOG_INFO(Frontend, "iOS memory: footprint {} MiB, {} MiB left before the limit",
+                     ok ? vm.phys_footprint >> 20 : 0, os_proc_available_memory() >> 20);
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }).detach();
+}
+
 // The CPU JIT needs StikDebug: wait until it has attached, then reserve the code cache (on TXM
 // devices that runs the universal.js handshake and detaches the debugger).
 static bool EnsureIosJit() {
@@ -755,6 +806,7 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     if (!lp.filepath.empty() && !EnsureIosJit()) {
         return SDL_APP_FAILURE;
     }
+    StartIosDiagnostics();
 #endif
     if (lp.filepath.empty()) {
         LOG_CRITICAL(Frontend, "Failed to load ROM: No ROM specified");
