@@ -150,6 +150,13 @@ jobs:
           # Entitlements build (debugging for JIT, more memory): needs a signer that keeps them.
           codesign --force --sign - --entitlements dist/ios/lichii.entitlements Payload/*.app
           zip -qry Lichii-entitlements.ipa Payload
+          # Same app under MeloNX's bundle ID, so SideStore reuses MeloNX's app ID (it replaces MeloNX).
+          rm -rf Payload && mkdir Payload && cp -R "$app" Payload/
+          plutil -replace CFBundleIdentifier -string com.stossy11.MeloNX Payload/*.app/Info.plist
+          codesign --force --sign - Payload/*.app
+          zip -qry Lichii-MeloNX-ID.ipa Payload
+          codesign --force --sign - --entitlements dist/ios/lichii.entitlements Payload/*.app
+          zip -qry Lichii-MeloNX-ID-entitlements.ipa Payload
 
       - uses: actions/upload-artifact@v4
         if: success()
@@ -158,6 +165,8 @@ jobs:
           path: |
             Lichii.ipa
             Lichii-entitlements.ipa
+            Lichii-MeloNX-ID.ipa
+            Lichii-MeloNX-ID-entitlements.ipa
 
       - uses: actions/upload-artifact@v4
         if: always()
