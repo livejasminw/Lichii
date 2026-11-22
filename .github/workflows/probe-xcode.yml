@@ -1,0 +1,16 @@
+name: Probe Xcode versions
+on:
+  push:
+    branches: [blender-ios]
+    paths: ['.github/workflows/probe-xcode.yml']
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-15, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: |
+          sw_vers; ls -d /Applications/Xcode*.app; xcodebuild -version
+          for x in /Applications/Xcode*.app; do echo "== $x"; DEVELOPER_DIR=$x/Contents/Developer xcodebuild -showsdks 2>/dev/null | grep -i iphoneos; done
