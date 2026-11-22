@@ -36,8 +36,11 @@ jobs:
 
       - name: Get Blender (official ios branch)
         run: |
-          git clone --depth 1 -b ios https://projects.blender.org/blender/blender.git blender
+          # The ios branch as of Sept 2025 (Blender 5.0 alpha): the last version built against the
+          # published iOS libraries. Its 5.1.2 update needs libraries that were never published.
+          git clone --shallow-since=2025-09-01 -b ios https://projects.blender.org/blender/blender.git blender
           cd blender
+          git checkout -q d9b6fe34ddce527d93b97c0bf42ad92cebac4e4e
           git log -1 --format='%h %ad %s' --date=short
 
       - name: Get precompiled libraries (macOS host + iOS)
