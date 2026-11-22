@@ -177,7 +177,9 @@ class DUO_PT_fold(bpy.types.Panel):
 
 
 def draw_topbar(self, context):
-    if context.region.alignment != 'RIGHT':
+    # The left part of the top bar (before the File menu) is always on screen; the right part is
+    # cut off on a phone.
+    if context.region.alignment == 'RIGHT':
         return
     folded = context.window.workspace.name == FOLD_WORKSPACE
     row = self.layout.row(align=True)
@@ -185,6 +187,14 @@ def draw_topbar(self, context):
                  text="Unfold" if folded else "Fold",
                  icon='FULLSCREEN_ENTER' if folded else 'SPLIT_HORIZONTAL')
     row.popover(panel="DUO_PT_fold", text="")
+
+
+def draw_view_menu(self, context):
+    layout = self.layout
+    layout.separator()
+    layout.operator("duo.fold", text="iPhone Duo: Fold Layout", icon='SPLIT_HORIZONTAL')
+    layout.operator("duo.unfold", text="iPhone Duo: Unfold Layout", icon='FULLSCREEN_ENTER')
+    layout.popover("DUO_PT_fold", text="iPhone Duo: Fold Settings")
 
 
 classes = (DuoFoldSettings, DUO_OT_fold, DUO_OT_unfold, DUO_OT_swap, DUO_PT_fold)
@@ -195,10 +205,13 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.WindowManager.duo_fold = PointerProperty(type=DuoFoldSettings)
     bpy.types.TOPBAR_HT_upper_bar.prepend(draw_topbar)
+    bpy.types.VIEW3D_MT_view.append(draw_view_menu)
+    print("iPhone Duo fold layout: ready (top bar, left; 3D Viewport > View menu)")
 
 
 def unregister():
     bpy.types.TOPBAR_HT_upper_bar.remove(draw_topbar)
+    bpy.types.VIEW3D_MT_view.remove(draw_view_menu)
     del bpy.types.WindowManager.duo_fold
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
