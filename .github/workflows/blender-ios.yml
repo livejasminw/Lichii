@@ -74,6 +74,13 @@ jobs:
           make release ios ninja ccache 2>&1 | tee ../build.log | grep -E 'error|Error|FAILED|^\[[0-9]+/[0-9]+\]' | awk 'NR % 200 == 1 || /rror|FAILED/'
           ccache -s || true
 
+      - name: Show build errors
+        if: failure()
+        run: |
+          grep -n -i -B3 -A12 'CMake Error\|error:\|FAILED:' build.log | head -300 || true
+          echo ----- tail -----
+          tail -120 build.log
+
       - name: Package IPA
         run: |
           app=$(find build_ios -maxdepth 3 -name Blender.app -type d | head -1)
