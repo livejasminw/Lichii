@@ -89,7 +89,7 @@ jobs:
           pyver=$(ls lib/ios_arm64/python/include | sed -n 's/^python\([0-9.]*\).*/\1/p' | sort -V | tail -1)
           echo "iOS libs Python: $pyver; host: $(ls lib/macos_arm64/python/bin | grep -E '^python3\.[0-9]+$')"
           # The host tools are expected in ../build_ios (see platform_apple.cmake).
-          make release ios ninja ccache BUILD_DIR="$PWD/../build_ios" BUILD_CMAKE_ARGS="-DPYTHON_VERSION=$pyver" 2>&1 | tee ../build.log | grep -E 'error|Error|FAILED|^\[[0-9]+/[0-9]+\]' | awk 'NR % 200 == 1 || /rror|FAILED/'
+          make release ios ninja ccache BUILD_DIR="$PWD/../build_ios" BUILD_CMAKE_ARGS="-DPYTHON_VERSION=$pyver -DWITH_BLENDER_THUMBNAILER=OFF" 2>&1 | tee ../build.log | grep -E 'error|Error|FAILED|^\[[0-9]+/[0-9]+\]' | awk 'NR % 200 == 1 || /rror|FAILED/'
           ccache -s || true
 
       - name: Show build errors
