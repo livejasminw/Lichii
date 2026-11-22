@@ -762,23 +762,32 @@ static void Record(task_t, void*, unsigned, vm_range_t* ranges, unsigned count) 
     }
 }
 
+static kern_return_t Read(task_t, vm_address_t address, vm_size_t, void** out) {
+    *out = reinterpret_cast<void*>(address);
+    return KERN_SUCCESS;
+}
+
 static void Run(const char* when) {
     std::memset(slots, 0, sizeof(slots));
     other_bytes = other_count = 0;
     vm_address_t* zones = nullptr;
     unsigned zone_count = 0;
-    if (malloc_get_all_zones(mach_task_self(), nullptr, &zones, &zone_count) != KERN_SUCCESS) {
+    if (malloc_get_all_zones(mach_task_self(), Read, &zones, &zone_count) != KERN_SUCCESS) {
         return;
     }
     for (unsigned z = 0; z < zone_count; ++z) {
         auto* const zone = reinterpret_cast<malloc_zone_t*>(zones[z]);
+        // Only the system malloc zones: other libraries' zones (CoreAudio's caulk) crash when
+        // walked this way.
+        const char* const name = zone != nullptr ? malloc_get_zone_name(zone) : nullptr;
         if (zone == nullptr || zone->introspect == nullptr ||
-            zone->introspect->enumerator == nullptr) {
+            zone->introspect->enumerator == nullptr || name == nullptr ||
+            (std::strncmp(name, "Default", 7) != 0 && std::strncmp(name, "Malloc", 6) != 0)) {
             continue;
         }
         zone->introspect->force_lock(zone);
         zone->introspect->enumerator(mach_task_self(), nullptr, MALLOC_PTR_IN_USE_RANGE_TYPE,
-                                     zones[z], nullptr, Record);
+                                     zones[z], Read, Record);
         zone->introspect->force_unlock(zone);
     }
     std::array<u64, 8> buckets_bytes{}, buckets_count{};
