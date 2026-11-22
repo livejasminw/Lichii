@@ -3,7 +3,7 @@ name: Blender iOS build
 on:
   push:
     branches: [blender-ios]
-    paths-ignore: ['.github/workflows/repackage.yml']
+    paths-ignore: ['.github/workflows/repackage.yml', 'addons/**']
   workflow_dispatch:
 
 jobs:
@@ -140,6 +140,10 @@ jobs:
             /usr/libexec/PlistBuddy -c "Delete :$k" "$plist" 2>/dev/null || true
             /usr/libexec/PlistBuddy -c "Add :$k bool true" "$plist"
           done
+          # iPhone Duo fold layout add-on, loaded at startup.
+          startup=$(find "$app" -type d -path '*scripts/startup' | head -1)
+          echo "Startup scripts: $startup"
+          cp ci/addons/duo_fold.py "$startup/"
           mkdir -p out/Payload
           cp -R "$app" out/Payload/
           # No symlinks: iloader on Windows can't create them without admin rights.
