@@ -44,6 +44,18 @@ jobs:
         run: |
           cd blender
           python3 build_files/utils/make_update.py --no-blender --use-ios-libraries
+          pyver() { ls "$1/python/include" 2>/dev/null | sed -n 's/^python\([0-9.]*\).*/\1/p' | sort -V | tail -1; }
+          echo "Pinned iOS libs: $(git -C lib/ios_arm64 log -1 --format='%h %ad %s' --date=short), Python $(pyver lib/ios_arm64)"
+          git -C lib/ios_arm64 ls-remote --heads origin | tail -20
+          # Blender 5.1 needs Python 3.13+; if the pinned iOS libs are older, use the newest branch that has it.
+          if [ "$(printf '%s\n3.13\n' "$(pyver lib/ios_arm64)" | sort -V | head -1)" != "3.13" ]; then
+            for ref in blender-v5.1-release main; do
+              git -C lib/ios_arm64 fetch --depth 1 origin "$ref" || continue
+              git -C lib/ios_arm64 checkout -q FETCH_HEAD && git -C lib/ios_arm64 lfs pull
+              v=$(pyver lib/ios_arm64); echo "iOS libs $ref: $(git -C lib/ios_arm64 log -1 --format='%h %ad' --date=short), Python $v"
+              [ "$(printf '%s\n3.13\n' "$v" | sort -V | head -1)" = "3.13" ] && break
+            done
+          fi
           du -sh lib/* || true
           git lfs prune || true
           (cd lib/macos_arm64 && git lfs prune) || true
@@ -71,7 +83,7 @@ jobs:
           cd blender
           export CCACHE_DIR=~/Library/Caches/ccache CCACHE_MAXSIZE=4G
           set -o pipefail
-          pyver=$(ls lib/ios_arm64/python/include | sed -n 's/^python\([0-9.]*\).*/\1/p' | head -1)
+          pyver=$(ls lib/ios_arm64/python/include | sed -n 's/^python\([0-9.]*\).*/\1/p' | sort -V | tail -1)
           echo "iOS libs Python: $pyver; host: $(ls lib/macos_arm64/python/bin | grep -E '^python3\.[0-9]+$')"
           # The host tools are expected in ../build_ios (see platform_apple.cmake).
           make release ios ninja ccache BUILD_DIR="$PWD/../build_ios" BUILD_CMAKE_ARGS="-DPYTHON_VERSION=$pyver" 2>&1 | tee ../build.log | grep -E 'error|Error|FAILED|^\[[0-9]+/[0-9]+\]' | awk 'NR % 200 == 1 || /rror|FAILED/'
