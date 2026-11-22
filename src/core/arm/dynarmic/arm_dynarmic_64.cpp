@@ -419,7 +419,7 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
     // Code cache size
 #if defined(__APPLE__) && TARGET_OS_IPHONE
     // One slot of the code cache pool prepared through StikDebug (Common::IosJit::SlotSize).
-    config.code_cache_size = std::uint32_t(64_MiB);
+    config.code_cache_size = std::uint32_t(48_MiB);
 #elif defined(ARCHITECTURE_arm64) || defined(__sun__) || defined(__NetBSD__) || defined(__DragonFly__) || defined(__OpenBSD__)
     config.code_cache_size = std::uint32_t(128_MiB);
 #else

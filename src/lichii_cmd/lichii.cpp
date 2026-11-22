@@ -35,6 +35,9 @@
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 #include <CoreFoundation/CoreFoundation.h>
 #include <execinfo.h>
+#include <fstream>
+#include <iterator>
+#include <limits.h>
 #include <fcntl.h>
 #include <mach/mach.h>
 #include <os/proc.h>
@@ -615,6 +618,7 @@ static bool AskYesNo(const char* message, const char* yes, const char* no) {
 // iOS ends a process over its memory limit (jetsam) without a signal, and the crash log in
 // Settings lists only the exception. Log the footprint once a second, and write fatal signals
 // with a backtrace to crash.txt next to the log.
+extern "C" int csops(pid_t pid, unsigned int ops, void* useraddr, size_t usersize);
 static int g_crash_fd = -1;
 
 static void IosFatalSignal(int sig, siginfo_t* info, void*) {
@@ -634,7 +638,30 @@ static void IosFatalSignal(int sig, siginfo_t* info, void*) {
     raise(sig);
 }
 
+// Whether the signature and the embedded profile carry the increased memory limit: the limit
+// only rises when the code signature itself has the entitlement.
+static void LogIosEntitlements() {
+    constexpr std::string_view key = "com.apple.developer.kernel.increased-memory-limit";
+    std::vector<char> blob(64 * 1024);
+    const bool signed_ok = csops(getpid(), 7 /* CS_OPS_ENTITLEMENTS_BLOB */, blob.data(),
+                                 blob.size()) == 0;
+    const bool in_signature =
+        signed_ok && std::string_view{blob.data(), blob.size()}.find(key) != std::string_view::npos;
+    bool in_profile = false;
+    char path[PATH_MAX]{};
+    if (const CFURLRef url = CFBundleCopyBundleURL(CFBundleGetMainBundle())) {
+        CFURLGetFileSystemRepresentation(url, true, reinterpret_cast<UInt8*>(path), sizeof(path));
+        CFRelease(url);
+        std::ifstream profile{std::string{path} + "/embedded.mobileprovision", std::ios::binary};
+        const std::string data{std::istreambuf_iterator<char>{profile}, {}};
+        in_profile = data.find(key) != std::string::npos;
+    }
+    LOG_INFO(Frontend, "iOS entitlements: increased memory limit in signature: {}, in profile: {}",
+             signed_ok ? (in_signature ? "yes" : "no") : "unknown", in_profile ? "yes" : "no");
+}
+
 static void StartIosDiagnostics() {
+    LogIosEntitlements();
     const auto crash_path = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "crash.txt";
     g_crash_fd = open(Common::FS::PathToUTF8String(crash_path).c_str(),
                       O_WRONLY | O_CREAT | O_TRUNC, 0644);

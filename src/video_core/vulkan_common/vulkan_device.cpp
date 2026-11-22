@@ -2526,7 +2526,7 @@ void Device::CollectPhysicalMemoryInfo() {
     // iOS reports most of the system memory as one 8 GiB heap, but the whole app may only use
     // about 6 GiB before it is killed, and guest memory, the JIT and the CPU side need most of it.
     if (heap_size_limit == 0) {
-        heap_size_limit = 1536_MiB;
+        heap_size_limit = 1024_MiB;
         LOG_INFO(Render_Vulkan, "iOS: device-local heaps limited to {} MiB", heap_size_limit >> 20);
     }
 #endif
