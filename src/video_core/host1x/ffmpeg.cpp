@@ -3,6 +3,9 @@
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include <cstring>
 #include <string_view>
 #include <vector>
@@ -288,6 +291,11 @@ DecoderContext::DecoderContext(const Decoder& decoder) : m_decoder{decoder} {
     av_opt_set(m_codec_context->priv_data, "tune", "zerolatency", 0);
     m_codec_context->thread_count = 0;
     m_codec_context->thread_type &= ~FF_THREAD_FRAME;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // iOS: every decoder thread keeps its own frame buffers; two threads decode 1080p60 AV1 fine.
+    m_codec_context->thread_count = 2;
+    av_opt_set_int(m_codec_context->priv_data, "max_frame_delay", 1, 0);
+#endif
 #if defined(__ANDROID__)
     m_codec_context->flags |= AV_CODEC_FLAG_LOW_DELAY;
     m_codec_context->flags2 |= AV_CODEC_FLAG2_FAST;

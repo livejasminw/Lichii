@@ -10,6 +10,7 @@
 #include <iterator>
 #include <fstream>
 #include <vector>
+#include <fmt/format.h>
 #include <cstdlib>
 #include <chrono>
 #include <cstdio>
@@ -40,6 +41,7 @@
 #include <limits.h>
 #include <fcntl.h>
 #include <mach/mach.h>
+#include <malloc/malloc.h>
 #include <mach/vm_statistics.h>
 #include <os/proc.h>
 #include <signal.h>
@@ -732,6 +734,91 @@ static void LogIosMemoryBreakdown() {
              largest[5] >> 20);
 }
 
+// Counts the live malloc blocks by exact size (no allocation while the zones are locked), to show
+// what the many small blocks are.
+namespace IosHeapCensus {
+struct Slot {
+    u64 size;
+    u64 count;
+};
+constexpr size_t SlotCount = 8192;
+static Slot slots[SlotCount];
+static u64 other_bytes, other_count;
+
+static void Record(task_t, void*, unsigned, vm_range_t* ranges, unsigned count) {
+    for (unsigned i = 0; i < count; ++i) {
+        const u64 size = ranges[i].size;
+        size_t index = (size * 0x9E3779B97F4A7C15ULL) >> 51;
+        for (size_t probe = 0; probe < 64; ++probe, index = (index + 1) % SlotCount) {
+            if (slots[index].size == size || slots[index].count == 0) {
+                slots[index].size = size;
+                ++slots[index].count;
+                goto next;
+            }
+        }
+        other_bytes += size;
+        ++other_count;
+    next:;
+    }
+}
+
+static void Run(const char* when) {
+    std::memset(slots, 0, sizeof(slots));
+    other_bytes = other_count = 0;
+    vm_address_t* zones = nullptr;
+    unsigned zone_count = 0;
+    if (malloc_get_all_zones(mach_task_self(), nullptr, &zones, &zone_count) != KERN_SUCCESS) {
+        return;
+    }
+    for (unsigned z = 0; z < zone_count; ++z) {
+        auto* const zone = reinterpret_cast<malloc_zone_t*>(zones[z]);
+        if (zone == nullptr || zone->introspect == nullptr ||
+            zone->introspect->enumerator == nullptr) {
+            continue;
+        }
+        zone->introspect->force_lock(zone);
+        zone->introspect->enumerator(mach_task_self(), nullptr, MALLOC_PTR_IN_USE_RANGE_TYPE,
+                                     zones[z], nullptr, Record);
+        zone->introspect->force_unlock(zone);
+    }
+    std::array<u64, 8> buckets_bytes{}, buckets_count{};
+    constexpr std::array<u64, 7> limits{64, 256, 1024, 4096, 16384, 131072, 1ULL << 20};
+    std::vector<Slot> used;
+    for (const Slot& slot : slots) {
+        if (slot.count == 0) {
+            continue;
+        }
+        used.push_back(slot);
+        size_t b = 0;
+        while (b < limits.size() && slot.size > limits[b]) {
+            ++b;
+        }
+        buckets_bytes[b] += slot.size * slot.count;
+        buckets_count[b] += slot.count;
+    }
+    std::sort(used.begin(), used.end(), [](const Slot& a, const Slot& b) {
+        return a.size * a.count > b.size * b.count;
+    });
+    LOG_INFO(Frontend,
+             "iOS heap census ({}): <=64 B {} MiB/{}k, <=256 B {} MiB/{}k, <=1 KiB {} MiB/{}k, "
+             "<=4 KiB {} MiB/{}k, <=16 KiB {} MiB/{}k, <=128 KiB {} MiB/{}k, <=1 MiB {} MiB/{}k, "
+             "bigger {} MiB/{}",
+             when, buckets_bytes[0] >> 20, buckets_count[0] / 1000, buckets_bytes[1] >> 20,
+             buckets_count[1] / 1000, buckets_bytes[2] >> 20, buckets_count[2] / 1000,
+             buckets_bytes[3] >> 20, buckets_count[3] / 1000, buckets_bytes[4] >> 20,
+             buckets_count[4] / 1000, buckets_bytes[5] >> 20, buckets_count[5] / 1000,
+             buckets_bytes[6] >> 20, buckets_count[6] / 1000, buckets_bytes[7] >> 20,
+             buckets_count[7]);
+    std::string top;
+    for (size_t i = 0; i < used.size() && i < 12; ++i) {
+        top += fmt::format(" {}x{}B={}MiB", used[i].count, used[i].size,
+                           (used[i].size * used[i].count) >> 20);
+    }
+    LOG_INFO(Frontend, "iOS heap census ({}): top sizes{}; {} MiB in {} blocks not counted", when,
+             top, other_bytes >> 20, other_count);
+}
+} // namespace IosHeapCensus
+
 static void StartIosDiagnostics() {
     LogIosEntitlements();
     const auto crash_path = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "crash.txt";
@@ -755,6 +842,14 @@ static void StartIosDiagnostics() {
                                       reinterpret_cast<task_info_t>(&vm), &count) == KERN_SUCCESS;
             LOG_INFO(Frontend, "iOS memory: footprint {} MiB, {} MiB left before the limit",
                      ok ? vm.phys_footprint >> 20 : 0, os_proc_available_memory() >> 20);
+            static int census_done = 0;
+            const u64 footprint_mib = ok ? vm.phys_footprint >> 20 : 0;
+            if ((census_done == 0 && footprint_mib > 3000) ||
+                (census_done == 1 && footprint_mib > 4700) ||
+                (census_done == 2 && footprint_mib > 5600)) {
+                ++census_done;
+                IosHeapCensus::Run(census_done == 1 ? "3 GB" : census_done == 2 ? "4.7 GB" : "5.6 GB");
+            }
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
     }).detach();
