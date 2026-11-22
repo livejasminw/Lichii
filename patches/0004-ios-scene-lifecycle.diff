@@ -1,0 +1,192 @@
+diff --git a/intern/ghost/intern/GHOST_ContextIOS.mm b/intern/ghost/intern/GHOST_ContextIOS.mm
+index f9a5402e..0b9d9429 100644
+--- a/intern/ghost/intern/GHOST_ContextIOS.mm
++++ b/intern/ghost/intern/GHOST_ContextIOS.mm
+@@ -19,6 +19,8 @@
+ #import <QuartzCore/QuartzCore.h>
+ #import <UIKit/UIKit.h>
+ 
++CGRect GHOST_iosSceneBounds();
++
+ bool GHOST_ContextIOS::current_drawable_presented = false;
+ id<CAMetalDrawable> GHOST_ContextIOS::prevDrawable = nil;
+ 
+@@ -56,7 +58,7 @@ GHOST_ContextIOS::GHOST_ContextIOS(const GHOST_ContextParams &context_params,
+     /* Initialize Metal device (Using system default) */
+     id<MTLDevice> metalDevice = MTLCreateSystemDefaultDevice();
+ 
+-    CGRect screenRect = [[UIScreen mainScreen] bounds];
++    CGRect screenRect = GHOST_iosSceneBounds();
+     CGFloat screenWidth = screenRect.size.width;
+     CGFloat screenHeight = screenRect.size.height;
+     if (screenWidth <= 0 || screenHeight <= 0) {
+@@ -320,7 +322,7 @@ void GHOST_ContextIOS::metalInitFramebuffer()
+ 
+ void GHOST_ContextIOS::metalUpdateFramebuffer()
+ {
+-  CGRect screenRect = [[UIScreen mainScreen] bounds];
++  CGRect screenRect = GHOST_iosSceneBounds();
+   CGFloat scaling_fac = [UIScreen mainScreen].scale;
+   CGFloat screenWidth = screenRect.size.width;
+   CGFloat screenHeight = screenRect.size.height;
+diff --git a/intern/ghost/intern/GHOST_SystemIOS.mm b/intern/ghost/intern/GHOST_SystemIOS.mm
+index a2956baa..bd62c897 100644
+--- a/intern/ghost/intern/GHOST_SystemIOS.mm
++++ b/intern/ghost/intern/GHOST_SystemIOS.mm
+@@ -43,6 +43,75 @@ const char **argv = nullptr;
+ void WM_main_loop_body(bContext *C);
+ int main_ios_callback(int argc, const char **argv);
+ 
++/* The window scene Blender draws into (scene-based lifecycle, required for the iPhone Duo to give
++ * the app the whole display when folded and to resize it with the hinge). */
++UIWindowScene *ghost_ios_window_scene = nil;
++static bool ghost_ios_started = false;
++
++CGRect GHOST_iosSceneBounds()
++{
++  if (ghost_ios_window_scene) {
++    return ghost_ios_window_scene.coordinateSpace.bounds;
++  }
++  return [[UIScreen mainScreen] bounds];
++}
++
++static void ghost_ios_start_once()
++{
++  if (!ghost_ios_started) {
++    ghost_ios_started = true;
++    main_ios_callback(argc, argv);
++  }
++}
++
++@interface GHOSTSceneDelegate : UIResponder <UIWindowSceneDelegate>
++@property(strong, nonatomic) UIWindow *window;
++@end
++
++@implementation GHOSTSceneDelegate
++
++- (void)scene:(UIScene *)scene
++    willConnectToSession:(UISceneSession *)session
++                 options:(UISceneConnectionOptions *)connectionOptions
++{
++  if ([scene isKindOfClass:[UIWindowScene class]]) {
++    ghost_ios_window_scene = (UIWindowScene *)scene;
++    printf("Blender iOS: window scene connected, %.0fx%.0f\n",
++           ghost_ios_window_scene.coordinateSpace.bounds.size.width,
++           ghost_ios_window_scene.coordinateSpace.bounds.size.height);
++  }
++  ghost_ios_start_once();
++  for (UIOpenURLContext *context in connectionOptions.URLContexts) {
++    GHOST_SystemIOS *system = static_cast<GHOST_SystemIOS *>(GHOST_ISystem::getSystem());
++    if (system) {
++      system->handleOpenDocumentRequest(context.URL.path);
++    }
++  }
++}
++
++- (void)scene:(UIScene *)scene openURLContexts:(NSSet<UIOpenURLContext *> *)URLContexts
++{
++  GHOST_SystemIOS *system = static_cast<GHOST_SystemIOS *>(GHOST_ISystem::getSystem());
++  for (UIOpenURLContext *context in URLContexts) {
++    system->handleOpenDocumentRequest(context.URL.path);
++  }
++}
++
++- (void)windowScene:(UIWindowScene *)windowScene
++    didUpdateCoordinateSpace:(id<UICoordinateSpace>)previousCoordinateSpace
++        interfaceOrientation:(UIInterfaceOrientation)previousInterfaceOrientation
++             traitCollection:(UITraitCollection *)previousTraitCollection
++{
++  CGRect bounds = windowScene.coordinateSpace.bounds;
++  printf("Blender iOS: scene resized to %.0fx%.0f\n", bounds.size.width, bounds.size.height);
++  for (UIWindow *window in windowScene.windows) {
++    window.frame = bounds;
++    [window.rootViewController.view setNeedsLayout];
++  }
++}
++
++@end
++
+ @interface IOSAppDelegate : UIResponder <UIApplicationDelegate>
+ 
+ @property(strong, nonatomic) UIWindow *window;
+@@ -54,11 +123,21 @@ int main_ios_callback(int argc, const char **argv);
+ - (BOOL)application:(UIApplication *)application
+     didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
+ {
+-  main_ios_callback(argc, argv);
+-
++  /* Blender starts once its window scene connects (see GHOSTSceneDelegate). */
+   return YES;
+ }
+ 
++- (UISceneConfiguration *)application:(UIApplication *)application
++    configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession
++                                   options:(UISceneConnectionOptions *)options
++{
++  UISceneConfiguration *config = [[UISceneConfiguration alloc]
++      initWithName:@"Default Configuration"
++       sessionRole:connectingSceneSession.role];
++  config.delegateClass = [GHOSTSceneDelegate class];
++  return config;
++}
++
+ - (BOOL)application:(UIApplication *)application
+             openURL:(NSURL *)url
+             options:(NSDictionary<UIApplicationOpenURLOptionsKey, id> *)options
+@@ -477,7 +556,7 @@ uint8_t GHOST_SystemIOS::getNumDisplays() const
+ 
+ void GHOST_SystemIOS::getMainDisplayDimensions(uint32_t &width, uint32_t &height) const
+ {
+-  CGRect screenRect = [[UIScreen mainScreen] bounds];
++  CGRect screenRect = GHOST_iosSceneBounds();
+   CGFloat scaling_fac = [UIScreen mainScreen].scale;
+   CGFloat screenWidth = screenRect.size.width * scaling_fac;
+   CGFloat screenHeight = screenRect.size.height * scaling_fac;
+@@ -514,7 +593,7 @@ GHOST_IWindow *GHOST_SystemIOS::createWindow(const char *title,
+   @autoreleasepool {
+ 
+     /* Create window at native size. */
+-    CGRect bounds = [[UIScreen mainScreen] bounds];
++    CGRect bounds = GHOST_iosSceneBounds();
+ 
+     window = (GHOST_IWindow *)new GHOST_WindowIOS(this,
+                                                   title,
+diff --git a/intern/ghost/intern/GHOST_WindowIOS.mm b/intern/ghost/intern/GHOST_WindowIOS.mm
+index 3b3989eb..e5c35178 100644
+--- a/intern/ghost/intern/GHOST_WindowIOS.mm
++++ b/intern/ghost/intern/GHOST_WindowIOS.mm
+@@ -4,6 +4,10 @@
+ 
+ #include "GHOST_WindowIOS.hh"
+ 
++#import <UIKit/UIKit.h>
++extern UIWindowScene *ghost_ios_window_scene;
++CGRect GHOST_iosSceneBounds();
++
+ #include "GHOST_ContextIOS.hh"
+ #include "GHOST_SystemIOS.hh"
+ 
+@@ -1397,16 +1401,21 @@ GHOST_WindowIOS::GHOST_WindowIOS(GHOST_SystemIOS *system_ios,
+ 
+   if (full_screen_) {
+     /* Init window at native res. */
+-    ghost_rootWindow = [[GHOSTUIWindow alloc] init];
++    ghost_rootWindow = ghost_ios_window_scene ?
++                           [[GHOSTUIWindow alloc] initWithWindowScene:ghost_ios_window_scene] :
++                           [[GHOSTUIWindow alloc] init];
+     [ghost_rootWindow retain];
+     /* Ensure fullscreen. */
+-    CGRect rect = [UIScreen mainScreen].bounds;
++    CGRect rect = GHOST_iosSceneBounds();
+     rootWindow.frame = rect;
+   }
+   else {
+     /* Init window at specified size. */
+     ghost_rootWindow = [[GHOSTUIWindow alloc]
+         initWithFrame:CGRectMake(left, bottom, width, height)];
++    if (ghost_ios_window_scene) {
++      ghost_rootWindow.windowScene = ghost_ios_window_scene;
++    }
+     [ghost_rootWindow retain];
+     [ghost_rootWindow setClipsToBounds:YES];
+   }

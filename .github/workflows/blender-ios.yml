@@ -127,8 +127,19 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Add :UIDeviceFamily array' -c 'Add :UIDeviceFamily:0 integer 1' -c 'Add :UIDeviceFamily:1 integer 2' "$plist"
           /usr/libexec/PlistBuddy -c 'Set :MinimumOSVersion 17.0' "$plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Add :MinimumOSVersion string 17.0' "$plist"
           /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier com.livejasminw.blender' "$plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Add :CFBundleIdentifier string com.livejasminw.blender' "$plist"
+          # Scene-based lifecycle, resizable (no UIRequiresFullScreen): needed for the iPhone Duo to
+          # give Blender the whole display when folded.
           /usr/libexec/PlistBuddy -c 'Delete :UIRequiresFullScreen' "$plist" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c 'Add :UIRequiresFullScreen bool true' "$plist"
+          /usr/libexec/PlistBuddy -c 'Delete :UIApplicationSceneManifest' "$plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy \
+            -c 'Add :UIApplicationSceneManifest dict' \
+            -c 'Add :UIApplicationSceneManifest:UIApplicationSupportsMultipleScenes bool false' \
+            -c 'Add :UIApplicationSceneManifest:UISceneConfigurations dict' \
+            -c 'Add :UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication array' \
+            -c 'Add :UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication:0 dict' \
+            -c 'Add :UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication:0:UISceneConfigurationName string Default Configuration' \
+            -c 'Add :UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication:0:UISceneDelegateClassName string GHOSTSceneDelegate' \
+            "$plist"
           # Blender makes its own window, so no main storyboard; compile Blender's storyboard
           # for the launch screen (without one, iPhones letterbox the app).
           /usr/libexec/PlistBuddy -c 'Delete :UIMainStoryboardFile' "$plist" 2>/dev/null || true
@@ -156,13 +167,24 @@ jobs:
           find out/Payload/Blender.app -name '*.dylib' -o -name '*.framework' | while read f; do codesign -f -s - "$f" || true; done
           codesign -f -s - --entitlements blender/release/ios/entitlements.plist out/Payload/Blender.app || codesign -f -s - out/Payload/Blender.app
           (cd out && zip -qr Blender-iOS.ipa Payload)
+          # Second IPA marked as built with the iOS 27.1 SDK, so iOS doesn't run it in iPhone Duo
+          # compatibility mode (GitHub's runners only have Xcode 26).
+          exe=out/Payload/Blender.app/Blender
+          vtool -show-build "$exe" | head -12
+          minos=$(vtool -show-build "$exe" | awk '/minos/ {print $2; exit}')
+          vtool -set-build-version ios "${minos:-16.0}" 27.1 -replace -output "$exe.new" "$exe" && mv "$exe.new" "$exe"
+          vtool -show-build "$exe" | head -12
+          codesign -f -s - --entitlements blender/release/ios/entitlements.plist out/Payload/Blender.app || codesign -f -s - out/Payload/Blender.app
+          (cd out && zip -qr Blender-iOS-sdk27.ipa Payload)
           ls -la out
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: Blender-iOS-${{ github.run_number }}
-          path: out/Blender-iOS.ipa
+          path: |
+            out/Blender-iOS.ipa
+            out/Blender-iOS-sdk27.ipa
 
       - name: Upload build log
         if: always()
