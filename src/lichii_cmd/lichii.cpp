@@ -670,6 +670,8 @@ static void LogIosMemoryBreakdown() {
     };
     Bucket untagged{"anonymous mmap (guest memory, JIT)"}, accel{"Metal/IOAccelerator"},
         malloc_mem{"malloc"}, iosurface{"IOSurface"}, other{"other"};
+    u64 malloc_small = 0, malloc_large = 0, malloc_count_large = 0;
+    std::array<u64, 6> largest{};
     vm_address_t address = 0;
     natural_t depth = 0;
     const u64 page = vm_page_size;
@@ -696,6 +698,18 @@ static void LogIosMemoryBreakdown() {
             bucket = &iosurface;
         } else if (info.user_tag >= VM_MEMORY_MALLOC && info.user_tag <= VM_MEMORY_MALLOC_NANO) {
             bucket = &malloc_mem;
+            if (info.user_tag == VM_MEMORY_MALLOC_LARGE ||
+                info.user_tag == VM_MEMORY_MALLOC_LARGE_REUSED ||
+                info.user_tag == VM_MEMORY_MALLOC_HUGE) {
+                malloc_large += bytes;
+                ++malloc_count_large;
+                auto smallest = std::min_element(largest.begin(), largest.end());
+                if (bytes > *smallest) {
+                    *smallest = bytes;
+                }
+            } else {
+                malloc_small += bytes;
+            }
         }
         bucket->bytes += bytes;
         address += size;
@@ -710,6 +724,12 @@ static void LogIosMemoryBreakdown() {
              malloc_mem.name, malloc_mem.bytes >> 20, iosurface.name, iosurface.bytes >> 20,
              other.name, other.bytes >> 20, vm.internal >> 20, vm.compressed >> 20,
              vm.external >> 20);
+    std::sort(largest.begin(), largest.end(), std::greater<>());
+    LOG_INFO(Frontend,
+             "iOS malloc: {} MiB in small blocks, {} MiB in {} large blocks; largest {} {} {} {} {} {} MiB",
+             malloc_small >> 20, malloc_large >> 20, malloc_count_large, largest[0] >> 20,
+             largest[1] >> 20, largest[2] >> 20, largest[3] >> 20, largest[4] >> 20,
+             largest[5] >> 20);
 }
 
 static void StartIosDiagnostics() {

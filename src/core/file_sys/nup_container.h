@@ -3,6 +3,10 @@
 
 #pragma once
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+
 #include <array>
 #include <filesystem>
 #include <functional>
@@ -37,7 +41,12 @@ class NupContainer {
 public:
     static constexpr std::array<u8, 4> HeaderMagic{'N', 'U', 'P', 0x01};
     /// Memory budget for decoded zstd members.
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // iOS kills the app past ~6 GB in all; larger members spill to temporary files instead.
+    static constexpr std::size_t DefaultCacheCap = 64 * 1024 * 1024;
+#else
     static constexpr std::size_t DefaultCacheCap = 512 * 1024 * 1024;
+#endif
 
     enum class PackageKind : u8 {
         Base = 0,
