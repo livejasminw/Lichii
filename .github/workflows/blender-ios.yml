@@ -75,13 +75,14 @@ jobs:
           done
 
       - name: ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/Library/Caches/ccache
           key: blender-ios-ccache-${{ github.run_number }}
           restore-keys: blender-ios-ccache-
 
       - name: Build
+        timeout-minutes: 320
         run: |
           cd blender
           export CCACHE_DIR=~/Library/Caches/ccache CCACHE_MAXSIZE=4G
@@ -89,8 +90,22 @@ jobs:
           pyver=$(ls lib/ios_arm64/python/include | sed -n 's/^python\([0-9.]*\).*/\1/p' | sort -V | tail -1)
           echo "iOS libs Python: $pyver; host: $(ls lib/macos_arm64/python/bin | grep -E '^python3\.[0-9]+$')"
           # The host tools are expected in ../build_ios (see platform_apple.cmake).
-          make release ios ninja ccache BUILD_DIR="$PWD/../build_ios" BUILD_CMAKE_ARGS="-DPYTHON_VERSION=$pyver -DWITH_BLENDER_THUMBNAILER=OFF" 2>&1 | tee ../build.log | grep -E 'error|Error|FAILED|^\[[0-9]+/[0-9]+\]' | awk 'NR % 200 == 1 || /rror|FAILED/'
+          # Configure (the first build attempt stops on the missing host tools)...
+          make release ios ninja ccache BUILD_DIR="$PWD/../build_ios" BUILD_CMAKE_ARGS="-DPYTHON_VERSION=$pyver -DWITH_BLENDER_THUMBNAILER=OFF" > ../build.log 2>&1 || true
+          grep -q 'Build files have been written' ../build.log || { tail -60 ../build.log; exit 1; }
+          # ...build the macOS host tools (makesdna, makesrna, datatoc, shader_tool)...
+          ninja -C ../build_ios blender_cross_tools_compile >> ../build.log 2>&1 || { tail -80 ../build.log; exit 1; }
+          echo "Host tools built"
+          # ...then Blender for iOS.
+          ninja -C ../build_ios -j 4 install 2>&1 | tee -a ../build.log | awk '/FAILED|error:/ || NR % 500 == 1'
           ccache -s || true
+
+      - name: Save ccache (also when the build fails or times out)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: blender-ios-ccache-${{ github.run_number }}
 
       - name: Show build errors
         if: failure()
