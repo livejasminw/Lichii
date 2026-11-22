@@ -1,0 +1,22 @@
+diff --git a/intern/ghost/intern/GHOST_WindowIOS.mm b/intern/ghost/intern/GHOST_WindowIOS.mm
+index 56d2ffa..54cf5e8 100644
+--- a/intern/ghost/intern/GHOST_WindowIOS.mm
++++ b/intern/ghost/intern/GHOST_WindowIOS.mm
+@@ -572,8 +572,15 @@ typedef struct UserInputEvent {
+         tablet_data.Active = GHOST_kTabletModeStylus;
+ 
+         /* Map apple pessure Range to Blender range: 0.0 (not touching) to 1.0 (full pressure). */
+-        tablet_data.Pressure = current_pencil_touch.force /
+-                               current_pencil_touch.maximumPossibleForce;
++        /* Apple Pencil (USB-C), the only Pencil the iPhone Duo takes, has no pressure sensor and
++         * reports a maximum force of 0: treat its strokes as full pressure. */
++        if (current_pencil_touch.maximumPossibleForce > 0.0) {
++          tablet_data.Pressure = current_pencil_touch.force /
++                                 current_pencil_touch.maximumPossibleForce;
++        }
++        else {
++          tablet_data.Pressure = 1.0f;
++        }
+ 
+         CGFloat azimuthAngle = [current_pencil_touch azimuthAngleInView:window->getView()];
+         CGFloat altitudeAngle = [current_pencil_touch altitudeAngle];

@@ -36,7 +36,7 @@ jobs:
 
       - name: Get Blender (official ios branch)
         run: |
-          git clone --depth 1 -b ios https://github.com/blender/blender.git blender
+          git clone --depth 1 -b ios https://projects.blender.org/blender/blender.git blender
           cd blender
           git log -1 --format='%h %ad %s' --date=short
 
