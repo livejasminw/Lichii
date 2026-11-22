@@ -23,14 +23,14 @@ jobs:
           submodules: recursive
 
       - name: Host tools
-        run: brew install ninja glslang pkg-config ccache
+        run: brew install ninja glslang pkg-config ccache meson nasm
 
       - name: Cache iOS dependencies
         id: deps-cache
         uses: actions/cache@v4
         with:
           path: ios-deps
-          key: ios-deps-v2-ffmpeg-n8.0-openssl-3.6.2-moltenvk-latest
+          key: ios-deps-v3-dav1d-1.5.1-ffmpeg-n8.0-openssl-3.6.2-moltenvk-latest
 
       - name: MoltenVK (iOS)
         if: steps.deps-cache.outputs.cache-hit != 'true'
@@ -39,6 +39,18 @@ jobs:
           mkdir -p "$DEPS/moltenvk" && cd "$DEPS/moltenvk"
           gh release download -R KhronosGroup/MoltenVK -p 'MoltenVK-ios.tar'
           tar xf MoltenVK-ios.tar && rm MoltenVK-ios.tar
+
+      - name: dav1d (iOS, static, for AV1 video)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 1.5.1 https://code.videolan.org/videolan/dav1d.git "$RUNNER_TEMP/dav1d"
+          cd "$RUNNER_TEMP/dav1d"
+          meson setup build --cross-file package/crossfiles/arm64-iPhoneOS.meson \
+            --prefix="$DEPS/dav1d" --libdir=lib --default-library=static --buildtype=release \
+            -Denable_tools=false -Denable_tests=false -Denable_examples=false \
+            -Dc_args="-miphoneos-version-min=$IOS_MIN" -Dc_link_args="-miphoneos-version-min=$IOS_MIN"
+          ninja -C build install
 
       - name: FFmpeg (iOS, static)
         if: steps.deps-cache.outputs.cache-hit != 'true'
@@ -49,7 +61,8 @@ jobs:
           sdk=$(xcrun --sdk iphoneos --show-sdk-path)
           cc="$(xcrun --sdk iphoneos -f clang)"
           flags="-arch arm64 -isysroot $sdk -miphoneos-version-min=$IOS_MIN"
-          ./configure --prefix="$DEPS/ffmpeg" \
+          export PKG_CONFIG_PATH="$DEPS/dav1d/lib/pkgconfig"
+          ./configure --prefix="$DEPS/ffmpeg" --pkg-config-flags=--static \
             --enable-cross-compile --target-os=darwin --arch=arm64 \
             --cc="$cc" --as="$cc" --sysroot="$sdk" \
             --extra-cflags="$flags" --extra-ldflags="$flags" \
@@ -58,6 +71,7 @@ jobs:
             --disable-avdevice --disable-avformat --disable-swresample --disable-network \
             --disable-videotoolbox --disable-audiotoolbox --disable-iconv \
             --disable-zlib --disable-bzlib --disable-lzma --disable-securetransport \
+            --enable-libdav1d --enable-decoder=libdav1d \
             --enable-decoder=h264 --enable-decoder=vp8 --enable-decoder=vp9 \
             --enable-filter=yadif,scale
           make -j"$(sysctl -n hw.ncpu)" install
@@ -130,6 +144,7 @@ jobs:
             "-DOPENSSL_SSL_LIBRARY=$DEPS/openssl/lib/libssl.a" \
             "-DOPENSSL_CRYPTO_LIBRARY=$DEPS/openssl/lib/libcrypto.a" \
             "-DMOLTENVK_FRAMEWORK=$MOLTENVK_FRAMEWORK" \
+            "-DLICHII_IOS_EXTRA_LIBS=$DEPS/dav1d/lib/libdav1d.a" \
             2>&1 | tee configure.log
 
       - name: Build
