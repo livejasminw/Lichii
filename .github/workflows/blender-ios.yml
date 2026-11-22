@@ -1,0 +1,110 @@
+name: Blender iOS build
+
+on:
+  push:
+    branches: [blender-ios]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 360
+    steps:
+      - name: Check out this branch (patches)
+        uses: actions/checkout@v4
+        with:
+          path: ci
+
+      - name: Free disk space
+        run: |
+          df -h /
+          # Keep only the default Xcode; drop simulator runtimes and other SDKs.
+          default_xcode=$(xcode-select -p | sed 's|/Contents/Developer||')
+          for x in /Applications/Xcode*.app; do
+            [ "$x" != "$default_xcode" ] && [ ! -L "$x" ] && sudo rm -rf "$x" &
+          done
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes ~/Library/Android /usr/local/share/dotnet \
+            /Users/runner/hostedtoolcache/* &
+          wait
+          df -h /
+
+      - name: Install tools
+        run: |
+          brew install ninja ccache git-lfs || true
+          git lfs install
+          xcodebuild -version
+
+      - name: Get Blender (official ios branch)
+        run: |
+          git clone --depth 1 -b ios https://github.com/blender/blender.git blender
+          cd blender
+          git log -1 --format='%h %ad %s' --date=short
+
+      - name: Get precompiled libraries (macOS host + iOS)
+        run: |
+          cd blender
+          python3 build_files/utils/make_update.py --no-blender --use-ios-libraries
+          du -sh lib/* || true
+          git lfs prune || true
+          (cd lib/macos_arm64 && git lfs prune) || true
+          (cd lib/ios_arm64 && git lfs prune) || true
+          df -h /
+
+      - name: Apply iPhone Duo patches
+        run: |
+          cd blender
+          shopt -s nullglob
+          for p in ../ci/patches/*.diff; do
+            echo "Applying $p"
+            git apply --whitespace=nowarn "$p"
+          done
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: blender-ios-ccache-${{ github.run_number }}
+          restore-keys: blender-ios-ccache-
+
+      - name: Build
+        run: |
+          cd blender
+          export CCACHE_DIR=~/Library/Caches/ccache CCACHE_MAXSIZE=4G
+          set -o pipefail
+          make release ios ninja ccache 2>&1 | tee ../build.log | grep -E 'error|Error|FAILED|^\[[0-9]+/[0-9]+\]' | awk 'NR % 200 == 1 || /rror|FAILED/'
+          ccache -s || true
+
+      - name: Package IPA
+        run: |
+          app=$(find build_ios -maxdepth 3 -name Blender.app -type d | head -1)
+          [ -z "$app" ] && app=$(find build_ios -name Blender.app -type d | head -1)
+          echo "App: $app"; du -sh "$app"
+          plist="$app/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print' "$plist" | head -60
+          # iPhone and iPad, iOS 17+, and a bundle ID of our own.
+          /usr/libexec/PlistBuddy -c 'Delete :UIDeviceFamily' "$plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Add :UIDeviceFamily array' -c 'Add :UIDeviceFamily:0 integer 1' -c 'Add :UIDeviceFamily:1 integer 2' "$plist"
+          /usr/libexec/PlistBuddy -c 'Set :MinimumOSVersion 17.0' "$plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Add :MinimumOSVersion string 17.0' "$plist"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier com.livejasminw.blender' "$plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Add :CFBundleIdentifier string com.livejasminw.blender' "$plist"
+          /usr/libexec/PlistBuddy -c 'Delete :UIRequiresFullScreen' "$plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Add :UIRequiresFullScreen bool true' "$plist"
+          mkdir -p out/Payload
+          cp -R "$app" out/Payload/
+          # Ad-hoc sign so the IPA is well-formed; sideloading tools re-sign it with your Apple ID.
+          find out/Payload/Blender.app -name '*.dylib' -o -name '*.framework' | while read f; do codesign -f -s - "$f" || true; done
+          codesign -f -s - --entitlements blender/release/ios/entitlements.plist out/Payload/Blender.app || codesign -f -s - out/Payload/Blender.app
+          (cd out && zip -qry Blender-iOS.ipa Payload)
+          ls -la out
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Blender-iOS-${{ github.run_number }}
+          path: out/Blender-iOS.ipa
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-ios-build-log-${{ github.run_number }}
+          path: build.log
