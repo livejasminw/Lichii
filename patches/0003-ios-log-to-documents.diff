@@ -1,0 +1,29 @@
+diff --git a/intern/ghost/intern/GHOST_SystemIOS.mm b/intern/ghost/intern/GHOST_SystemIOS.mm
+index 904050fb..a2956baa 100644
+--- a/intern/ghost/intern/GHOST_SystemIOS.mm
++++ b/intern/ghost/intern/GHOST_SystemIOS.mm
+@@ -149,6 +149,24 @@ int GHOST_iosmain(int _argc, const char **_argv)
+ {
+   argc = _argc;
+   argv = _argv;
++  /* Send Blender's console output to Documents/blender_log.txt (visible in the Files app), so
++   * startup problems can be diagnosed on the device. */
++  @autoreleasepool {
++    NSString *docs = [NSSearchPathForDirectoriesInDomains(
++        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
++    if (docs) {
++      const char *log_path = [[docs stringByAppendingPathComponent:@"blender_log.txt"]
++          fileSystemRepresentation];
++      if (freopen(log_path, "w", stdout)) {
++        setvbuf(stdout, nullptr, _IONBF, 0);
++      }
++      if (freopen(log_path, "a", stderr)) {
++        setvbuf(stderr, nullptr, _IONBF, 0);
++      }
++      printf("Blender iOS starting, bundle %s\n",
++             [[[NSBundle mainBundle] bundlePath] fileSystemRepresentation]);
++    }
++  }
+   @autoreleasepool {
+     return UIApplicationMain(
+         _argc, (char *_Nullable *)_argv, nil, NSStringFromClass([IOSAppDelegate class]));

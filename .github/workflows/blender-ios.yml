@@ -129,12 +129,29 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier com.livejasminw.blender' "$plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Add :CFBundleIdentifier string com.livejasminw.blender' "$plist"
           /usr/libexec/PlistBuddy -c 'Delete :UIRequiresFullScreen' "$plist" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c 'Add :UIRequiresFullScreen bool true' "$plist"
+          # Blender makes its own window, so no main storyboard; compile Blender's storyboard
+          # for the launch screen (without one, iPhones letterbox the app).
+          /usr/libexec/PlistBuddy -c 'Delete :UIMainStoryboardFile' "$plist" 2>/dev/null || true
+          rm -rf "$app/Main.storyboard" "$app/Main.storyboardc"
+          ibtool --compile "$app/Main.storyboardc" blender/release/ios/Blender.app/Main.storyboard
+          /usr/libexec/PlistBuddy -c 'Set :UILaunchStoryboardName Main' "$plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Add :UILaunchStoryboardName string Main' "$plist"
+          # Documents (blender_log.txt, .blend files) visible in the Files app.
+          for k in UIFileSharingEnabled LSSupportsOpeningDocumentsInPlace; do
+            /usr/libexec/PlistBuddy -c "Delete :$k" "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :$k bool true" "$plist"
+          done
           mkdir -p out/Payload
           cp -R "$app" out/Payload/
+          # No symlinks: iloader on Windows can't create them without admin rights.
+          while [ "$(find out/Payload -type l | wc -l)" -gt 0 ]; do
+            find out/Payload -type l | while read -r l; do
+              if [ -e "$l" ]; then cp -RL "$l" "$l.__copy" && rm "$l" && mv "$l.__copy" "$l"; else rm "$l"; fi
+            done
+          done
           # Ad-hoc sign so the IPA is well-formed; sideloading tools re-sign it with your Apple ID.
           find out/Payload/Blender.app -name '*.dylib' -o -name '*.framework' | while read f; do codesign -f -s - "$f" || true; done
           codesign -f -s - --entitlements blender/release/ios/entitlements.plist out/Payload/Blender.app || codesign -f -s - out/Payload/Blender.app
-          (cd out && zip -qry Blender-iOS.ipa Payload)
+          (cd out && zip -qr Blender-iOS.ipa Payload)
           ls -la out
 
       - name: Upload IPA
