@@ -20,7 +20,7 @@ jobs:
         run: |
           df -h /
           # Keep only the default Xcode; drop simulator runtimes and other SDKs.
-          default_xcode=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)
+          default_xcode=$(for x in /Applications/Xcode_27*.app; do [ -L "$x" ] || echo "$x"; done | sort -V | tail -1)
           [ -n "$default_xcode" ] || default_xcode=$(xcode-select -p | sed 's|/Contents/Developer||')
           echo "Keeping $default_xcode"
           for x in /Applications/Xcode*.app; do
@@ -34,7 +34,7 @@ jobs:
       - name: Install tools
         run: |
           # Newest Xcode 27.x (iOS 27.1+ SDK has the iPhone Duo APIs).
-          newest=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)
+          newest=$(for x in /Applications/Xcode_27*.app; do [ -L "$x" ] || [ ! -d "$x" ] || echo "$x"; done | sort -V | tail -1)
           [ -n "$newest" ] && sudo xcode-select -s "$newest/Contents/Developer"
           xcodebuild -showsdks | grep -i iphoneos
           brew install ninja ccache git-lfs || true
