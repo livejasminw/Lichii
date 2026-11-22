@@ -40,7 +40,6 @@
 #include <limits.h>
 #include <fcntl.h>
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
 #include <mach/vm_statistics.h>
 #include <os/proc.h>
 #include <signal.h>
@@ -671,14 +670,14 @@ static void LogIosMemoryBreakdown() {
     };
     Bucket untagged{"anonymous mmap (guest memory, JIT)"}, accel{"Metal/IOAccelerator"},
         malloc_mem{"malloc"}, iosurface{"IOSurface"}, other{"other"};
-    mach_vm_address_t address = 0;
+    vm_address_t address = 0;
     natural_t depth = 0;
     const u64 page = vm_page_size;
     for (;;) {
-        mach_vm_size_t size = 0;
+        vm_size_t size = 0;
         vm_region_submap_info_data_64_t info{};
         mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
-        if (mach_vm_region_recurse(mach_task_self(), &address, &size, &depth,
+        if (vm_region_recurse_64(mach_task_self(), &address, &size, &depth,
                                    reinterpret_cast<vm_region_recurse_info_t>(&info),
                                    &count) != KERN_SUCCESS) {
             break;
