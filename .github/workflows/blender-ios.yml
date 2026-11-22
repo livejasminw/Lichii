@@ -91,7 +91,7 @@ jobs:
           echo "iOS libs Python: $pyver; host: $(ls lib/macos_arm64/python/bin | grep -E '^python3\.[0-9]+$')"
           # The host tools are expected in ../build_ios (see platform_apple.cmake).
           # Configure (the first build attempt stops on the missing host tools)...
-          make release ios ninja ccache BUILD_DIR="$PWD/../build_ios" BUILD_CMAKE_ARGS="-DPYTHON_VERSION=$pyver -DWITH_BLENDER_THUMBNAILER=OFF -DCMAKE_SYSTEM_NAME=iOS" > ../build.log 2>&1 || true
+          make release ios ninja ccache BUILD_DIR="$PWD/../build_ios" BUILD_CMAKE_ARGS="-DPYTHON_VERSION=$pyver -DWITH_BLENDER_THUMBNAILER=OFF" > ../build.log 2>&1 || true
           grep -q 'Build files have been written' ../build.log || { tail -60 ../build.log; exit 1; }
           # ...build the macOS host tools (makesdna, makesrna, datatoc, shader_tool)...
           ninja -C ../build_ios blender_cross_tools_compile >> ../build.log 2>&1 || { tail -80 ../build.log; exit 1; }

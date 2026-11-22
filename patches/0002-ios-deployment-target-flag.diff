@@ -1,0 +1,16 @@
+diff --git a/build_files/cmake/platform/platform_apple.cmake b/build_files/cmake/platform/platform_apple.cmake
+index ece1c7cf..fbbc01cb 100644
+--- a/build_files/cmake/platform/platform_apple.cmake
++++ b/build_files/cmake/platform/platform_apple.cmake
+@@ -25,6 +25,11 @@ endfunction()
+ # -------------------------------------------------------------------------------
+ # Apple cross-platform device build config
+ if(WITH_APPLE_CROSSPLATFORM)
++  # CMake configured as Darwin adds -mmacosx-version-min, which clang rejects next to
++  # -miphoneos-version-min: emit the iOS form for the deployment target instead.
++  foreach(_lang C CXX OBJC OBJCXX)
++    set(CMAKE_${_lang}_OSX_DEPLOYMENT_TARGET_FLAG "-miphoneos-version-min=")
++  endforeach()
+   # Disable modules with no planned/required support on iOS.
+   set(WITH_USD OFF CACHE BOOL "Disable until we fix issue with release build" FORCE)
+   set(NO_PLATFORM_SUPPORT_MSG "Auto disabled as APPLE_TARGET_DEVICE=ios")
