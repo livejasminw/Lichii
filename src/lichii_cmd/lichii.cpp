@@ -40,6 +40,8 @@
 #include <limits.h>
 #include <fcntl.h>
 #include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <mach/vm_statistics.h>
 #include <os/proc.h>
 #include <signal.h>
 #include <thread>
@@ -660,6 +662,57 @@ static void LogIosEntitlements() {
              signed_ok ? (in_signature ? "yes" : "no") : "unknown", in_profile ? "yes" : "no");
 }
 
+// Resident and compressed memory by VM tag, to see what fills the footprint: guest memory and
+// other anonymous mappings (tag 0), Metal/IOAccelerator buffers, malloc, and the rest.
+static void LogIosMemoryBreakdown() {
+    struct Bucket {
+        const char* name;
+        u64 bytes = 0;
+    };
+    Bucket untagged{"anonymous mmap (guest memory, JIT)"}, accel{"Metal/IOAccelerator"},
+        malloc_mem{"malloc"}, iosurface{"IOSurface"}, other{"other"};
+    mach_vm_address_t address = 0;
+    natural_t depth = 0;
+    const u64 page = vm_page_size;
+    for (;;) {
+        mach_vm_size_t size = 0;
+        vm_region_submap_info_data_64_t info{};
+        mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
+        if (mach_vm_region_recurse(mach_task_self(), &address, &size, &depth,
+                                   reinterpret_cast<vm_region_recurse_info_t>(&info),
+                                   &count) != KERN_SUCCESS) {
+            break;
+        }
+        if (info.is_submap) {
+            ++depth;
+            continue;
+        }
+        const u64 bytes = (u64(info.pages_dirtied) + info.pages_swapped_out) * page;
+        Bucket* bucket = &other;
+        if (info.user_tag == 0) {
+            bucket = &untagged;
+        } else if (info.user_tag == VM_MEMORY_IOACCELERATOR) {
+            bucket = &accel;
+        } else if (info.user_tag == VM_MEMORY_IOSURFACE) {
+            bucket = &iosurface;
+        } else if (info.user_tag >= VM_MEMORY_MALLOC && info.user_tag <= VM_MEMORY_MALLOC_NANO) {
+            bucket = &malloc_mem;
+        }
+        bucket->bytes += bytes;
+        address += size;
+    }
+    task_vm_info_data_t vm{};
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&vm), &count);
+    LOG_INFO(Frontend,
+             "iOS memory breakdown (dirty+swapped MiB): {} {}, {} {}, {} {}, {} {}, {} {}; "
+             "internal {} MiB, compressed {} MiB, external {} MiB",
+             untagged.name, untagged.bytes >> 20, accel.name, accel.bytes >> 20,
+             malloc_mem.name, malloc_mem.bytes >> 20, iosurface.name, iosurface.bytes >> 20,
+             other.name, other.bytes >> 20, vm.internal >> 20, vm.compressed >> 20,
+             vm.external >> 20);
+}
+
 static void StartIosDiagnostics() {
     LogIosEntitlements();
     const auto crash_path = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "crash.txt";
@@ -672,7 +725,11 @@ static void StartIosDiagnostics() {
         sigaction(sig, &action, nullptr);
     }
     std::thread([] {
+        int tick = 0;
         for (;;) {
+            if (tick++ % 5 == 0) {
+                LogIosMemoryBreakdown();
+            }
             task_vm_info_data_t vm{};
             mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
             const bool ok = task_info(mach_task_self(), TASK_VM_INFO,
