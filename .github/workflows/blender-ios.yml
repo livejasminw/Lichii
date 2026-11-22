@@ -3,6 +3,7 @@ name: Blender iOS build
 on:
   push:
     branches: [blender-ios]
+    paths-ignore: ['.github/workflows/repackage.yml']
   workflow_dispatch:
 
 jobs:

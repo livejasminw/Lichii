@@ -1,0 +1,52 @@
+name: Blender iOS repackage (no symlinks)
+
+on:
+  push:
+    branches: [blender-ios]
+    paths: ['.github/workflows/repackage.yml']
+  workflow_dispatch:
+
+jobs:
+  repackage:
+    runs-on: macos-15
+    permissions:
+      actions: read
+    steps:
+      - name: Download the built IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: Blender-iOS-10
+          run-id: 44996480255
+          github-token: ${{ github.token }}
+          path: in
+
+      - name: Replace symlinks with real files
+        run: |
+          mkdir work && cd work
+          unzip -q ../in/Blender-iOS.ipa
+          echo "Symlinks before: $(find Payload -type l | wc -l)"
+          # Windows can't create symlinks without admin rights, so iloader fails on them.
+          find Payload -type l | sort -r | while read -r l; do
+            if [ -e "$l" ]; then
+              tmp="$l.__copy"
+              cp -RL "$l" "$tmp" && rm "$l" && mv "$tmp" "$l"
+            else
+              echo "Removing broken link $l"; rm "$l"
+            fi
+          done
+          # Directory links copied above may contain links of their own.
+          while [ "$(find Payload -type l | wc -l)" -gt 0 ]; do
+            find Payload -type l | while read -r l; do
+              if [ -e "$l" ]; then cp -RL "$l" "$l.__copy" && rm "$l" && mv "$l.__copy" "$l"; else rm "$l"; fi
+            done
+          done
+          echo "Symlinks after: $(find Payload -type l | wc -l)"
+          codesign -f -s - Payload/Blender.app || true
+          zip -qr ../Blender-iOS.ipa Payload
+          ls -la ..
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Blender-iOS-no-symlinks
+          path: Blender-iOS.ipa
