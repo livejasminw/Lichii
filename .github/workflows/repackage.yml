@@ -12,6 +12,10 @@ jobs:
     permissions:
       actions: read
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ci
+
       - name: Download the built IPA
         uses: actions/download-artifact@v4
         with:
@@ -41,6 +45,15 @@ jobs:
             done
           done
           echo "Symlinks after: $(find Payload -type l | wc -l)"
+          # The Ninja build copies no compiled storyboard, and iOS aborts at launch looking for
+          # "Main". Compile Blender's storyboard and use it for the launch screen too (without a
+          # launch screen iPhones run the app in a small letterboxed window).
+          app=Payload/Blender.app
+          ibtool --compile "$app/Main.storyboardc" ../ci/Main.storyboard
+          rm -f "$app/Main.storyboard"
+          /usr/libexec/PlistBuddy -c 'Set :UILaunchStoryboardName Main' "$app/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :UIMainStoryboardFile' -c 'Print :UILaunchStoryboardName' "$app/Info.plist"
+          ls "$app" | head -30
           codesign -f -s - Payload/Blender.app || true
           zip -qr ../Blender-iOS.ipa Payload
           ls -la ..
@@ -48,5 +61,5 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Blender-iOS-no-symlinks
+          name: Blender-iOS-fixed-${{ github.run_number }}
           path: Blender-iOS.ipa
