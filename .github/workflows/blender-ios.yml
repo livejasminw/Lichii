@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 360
     steps:
       - name: Check out this branch (patches)
@@ -31,6 +31,10 @@ jobs:
 
       - name: Install tools
         run: |
+          # Newest Xcode 27.x (iOS 27.1+ SDK has the iPhone Duo APIs).
+          newest=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$newest" ] && sudo xcode-select -s "$newest/Contents/Developer"
+          xcodebuild -showsdks | grep -i iphoneos
           brew install ninja ccache git-lfs || true
           git lfs install
           xcodebuild -version
@@ -171,6 +175,9 @@ jobs:
           # compatibility mode (GitHub's runners only have Xcode 26).
           exe=out/Payload/Blender.app/Blender
           vtool -show-build "$exe" | head -12
+          if vtool -show-build "$exe" | awk '/sdk/ {split($2,v,"."); exit !(v[1] >= 27)}'; then
+            echo "Built with the iOS 27 SDK already: no re-marked IPA needed"; exit 0
+          fi
           minos=$(vtool -show-build "$exe" | awk '/minos/ {print $2; exit}')
           vtool -set-build-version ios "${minos:-16.0}" 27.1 -replace -output "$exe.new" "$exe" && mv "$exe.new" "$exe"
           vtool -show-build "$exe" | head -12
