@@ -156,6 +156,8 @@ def _split_at_crease(context, window, screen, area, settings):
         return a.height if across else a.width
 
     factor = min(max((crease - pos(area)) / max(size(area), 1), 0.1), 0.9)
+    print(f"iPhone Duo fold: crease state {read_state()['crease']}, offset {settings.crease_offset}, "
+          f"splitting area {(area.x, area.y, area.width, area.height)} {direction} at {factor:.3f}")
     with context.temp_override(window=window, screen=screen, area=area, region=_window_region(area)):
         bpy.ops.screen.area_split(direction=direction, factor=factor)
     areas = sorted(screen.areas, key=pos)
@@ -163,22 +165,29 @@ def _split_at_crease(context, window, screen, area, settings):
         return None, None, across
     low, high = areas
     # Move the seam exactly onto the target (area_split rounds, and may count from either edge).
-    for attempt in range(4):
+    for attempt in range(6):
         seam = pos(high)
         delta = int(round(crease - seam))
         print(f"iPhone Duo fold: window {window.width}x{window.height}, "
-              f"{'across' if across else 'down'}, target {crease:.0f}, seam {seam}, move {delta}")
+              f"{'across' if across else 'down'}, target {crease:.0f}, seam {seam}, "
+              f"areas {[(a.x, a.y, a.width, a.height) for a in screen.areas]}, move {delta}")
         if abs(delta) <= 1:
             break
         mid_other = (low.x + low.width // 2) if across else (low.y + low.height // 2)
-        x, y = (mid_other, seam - 1) if across else (seam - 1, mid_other)
-        with context.temp_override(window=window, screen=screen, area=low, region=_window_region(low)):
-            try:
-                bpy.ops.screen.area_move(x=int(x), y=int(y), delta=delta)
-            except RuntimeError as ex:
-                print("iPhone Duo fold: could not move the seam:", ex)
+        # The border sits a pixel or two before the second area; try a few points on it.
+        for offset in (1, 2, 0, 3):
+            x, y = (mid_other, seam - offset) if across else (seam - offset, mid_other)
+            with context.temp_override(window=window, screen=screen, area=low, region=_window_region(low)):
+                try:
+                    result = bpy.ops.screen.area_move(x=int(x), y=int(y), delta=delta)
+                except RuntimeError as ex:
+                    result = {str(ex)}
+            low, high = sorted(screen.areas, key=pos)
+            print(f"iPhone Duo fold:   area_move at ({int(x)}, {int(y)}) -> {result}, seam now {pos(high)}")
+            if pos(high) != seam:
                 break
-        low, high = sorted(screen.areas, key=pos)
+        if pos(high) == seam:
+            break
     # Top half first in the laptop pose (higher y); left half first in the book pose (lower x).
     return ((high, low) if across else (low, high)) + (across,)
 
@@ -316,13 +325,18 @@ class DUO_PT_fold(bpy.types.Panel):
         # Step buttons instead of a slider: sliders and number typing are hard to use by touch.
         # Coarse (1%) and fine (0.1%) steps, toward the top/left and toward the bottom/right.
         back, forward = ('TRIA_UP', 'TRIA_DOWN') if across else ('TRIA_LEFT', 'TRIA_RIGHT')
+        word_back, word_forward = ("up", "down") if across else ("left", "right")
+        for steps in (((f"1% {word_back}", back, -0.01), (f"1% {word_forward}", forward, 0.01)),
+                      ((f"0.1% {word_back}", back, -0.001), (f"0.1% {word_forward}", forward, 0.001))):
+            row = col.row(align=True)
+            row.scale_y = 1.3
+            for label, icon, step in steps:
+                op = row.operator("duo.nudge", text=label, icon=icon)
+                op.step = step
         row = col.row(align=True)
         row.scale_y = 1.3
-        for label, icon, step in (("1%", back, -0.01), ("0.1%", back, -0.001),
-                                  ("Center", 'NONE', 0.0),
-                                  ("0.1%", forward, 0.001), ("1%", forward, 0.01)):
-            op = row.operator("duo.nudge", text=label, icon=icon)
-            op.step = step
+        op = row.operator("duo.nudge", text="Center on crease")
+        op.step = 0.0
         row = col.row()
         row.scale_y = 1.2
         row.operator("duo.keep_seam", icon='PINNED')
