@@ -305,6 +305,61 @@ class DUO_OT_keep_seam(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class DUO_OT_drag_seam(bpy.types.Operator):
+    """Tap, then drag your finger or Pencil anywhere: the border between the two editors follows
+    it. Lift to finish (the position is kept for later folds)"""
+    bl_idname = "duo.drag_seam"
+    bl_label = "Drag Seam"
+
+    def _areas(self, context):
+        window = context.window
+        areas = sorted(window.screen.areas, key=(lambda a: a.y) if self.across else (lambda a: a.x))
+        return areas if len(areas) == 2 else None
+
+    def invoke(self, context, event):
+        window = context.window
+        if window.workspace.name != FOLD_WORKSPACE:
+            fold(context, window)
+        crease = read_state()["crease"]
+        self.across = crease["across"] if crease else window.height > window.width
+        if not self._areas(context):
+            self.report({'WARNING'}, "Fold first")
+            return {'CANCELLED'}
+        self.started = False
+        context.window_manager.modal_handler_add(self)
+        context.workspace.status_text_set("Drag anywhere to move the border, lift to finish")
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        window = context.window
+        if event.type in {'ESC', 'RIGHTMOUSE'}:
+            context.workspace.status_text_set(None)
+            return {'CANCELLED'}
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            self.started = True
+        if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE', 'LEFTMOUSE'} and self.started:
+            areas = self._areas(context)
+            if areas:
+                low, high = areas
+                target = event.mouse_y if self.across else event.mouse_x
+                seam = high.y if self.across else high.x
+                delta = int(target - seam)
+                if delta:
+                    mid = (low.x + low.width // 2) if self.across else (low.y + low.height // 2)
+                    x, y = (mid, seam - 1) if self.across else (seam - 1, mid)
+                    with context.temp_override(window=window, screen=window.screen, area=low,
+                                               region=_window_region(low)):
+                        try:
+                            bpy.ops.screen.area_move(x=int(x), y=int(y), delta=delta)
+                        except RuntimeError as ex:
+                            print("iPhone Duo fold: drag could not move the seam:", ex)
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and self.started:
+            context.workspace.status_text_set(None)
+            bpy.ops.duo.keep_seam()
+            return {'FINISHED'}
+        return {'RUNNING_MODAL'}
+
+
 class DUO_PT_fold(bpy.types.Panel):
     bl_label = "iPhone Duo"
     bl_space_type = 'TOPBAR'
@@ -337,9 +392,10 @@ class DUO_PT_fold(bpy.types.Panel):
         row.scale_y = 1.3
         op = row.operator("duo.nudge", text="Center on crease")
         op.step = 0.0
-        row = col.row()
-        row.scale_y = 1.2
-        row.operator("duo.keep_seam", icon='PINNED')
+        row = col.row(align=True)
+        row.scale_y = 1.5
+        row.operator("duo.drag_seam", text="Drag Seam", icon='ARROW_LEFTRIGHT')
+        row.operator("duo.keep_seam", text="Keep Seam Here", icon='PINNED')
         col.label(text=f"Seam nudge: {settings.crease_offset * 100:+.1f}% of the screen. "
                        "Or drag the border, then Keep Seam Here.")
         row = col.row(align=True)
@@ -370,6 +426,8 @@ def draw_topbar(self, context):
     row.operator("duo.unfold" if folded else "duo.fold",
                  text="Unfold" if folded else "Fold",
                  icon='FULLSCREEN_ENTER' if folded else 'SPLIT_HORIZONTAL')
+    if folded:
+        row.operator("duo.drag_seam", text="", icon='ARROW_LEFTRIGHT')
     row.popover(panel="DUO_PT_fold", text="")
 
 
@@ -416,7 +474,7 @@ def _watch():
     return 0.4
 
 
-classes = (DuoFoldSettings, DUO_OT_fold, DUO_OT_unfold, DUO_OT_swap, DUO_OT_nudge, DUO_OT_keep_seam, DUO_PT_fold)
+classes = (DuoFoldSettings, DUO_OT_fold, DUO_OT_unfold, DUO_OT_swap, DUO_OT_nudge, DUO_OT_keep_seam, DUO_OT_drag_seam, DUO_PT_fold)
 
 
 def register():
