@@ -95,7 +95,7 @@ class DuoFoldSettings(bpy.types.PropertyGroup):
     crease_offset: FloatProperty(
         name="Seam nudge",
         description="Move the seam off the crease reported by iOS, as a fraction of the window",
-        default=0.0, min=-0.1, max=0.1, subtype='FACTOR')
+        default=0.0, min=-0.2, max=0.2, subtype='FACTOR')
     mirror: BoolProperty(
         name="Mirror on outer display",
         description="Show Blender on the outer display too. iOS only allows this while the camera "
@@ -162,17 +162,22 @@ def _split_at_crease(context, window, screen, area, settings):
     if len(areas) != 2:
         return None, None, across
     low, high = areas
-    # Move the seam exactly onto the crease (area_split rounds, and may count from either edge).
-    seam = pos(high)
-    delta = int(round(crease - seam))
-    if delta:
+    # Move the seam exactly onto the target (area_split rounds, and may count from either edge).
+    for attempt in range(4):
+        seam = pos(high)
+        delta = int(round(crease - seam))
+        print(f"iPhone Duo fold: window {window.width}x{window.height}, "
+              f"{'across' if across else 'down'}, target {crease:.0f}, seam {seam}, move {delta}")
+        if abs(delta) <= 1:
+            break
         mid_other = (low.x + low.width // 2) if across else (low.y + low.height // 2)
-        x, y = (mid_other, seam) if across else (seam, mid_other)
+        x, y = (mid_other, seam - 1) if across else (seam - 1, mid_other)
         with context.temp_override(window=window, screen=screen, area=low, region=_window_region(low)):
             try:
                 bpy.ops.screen.area_move(x=int(x), y=int(y), delta=delta)
             except RuntimeError as ex:
                 print("iPhone Duo fold: could not move the seam:", ex)
+                break
         low, high = sorted(screen.areas, key=pos)
     # Top half first in the laptop pose (higher y); left half first in the book pose (lower x).
     return ((high, low) if across else (low, high)) + (across,)
@@ -257,9 +262,37 @@ class DUO_OT_nudge(bpy.types.Operator):
 
     def execute(self, context):
         settings = _settings(context)
-        settings.crease_offset = 0.0 if self.step == 0.0 else settings.crease_offset + self.step
+        settings.crease_offset = 0.0 if self.step == 0.0 else max(-0.2, min(0.2, settings.crease_offset + self.step))
         if context.window.workspace.name == FOLD_WORKSPACE:
             fold(context, context.window)
+        return {'FINISHED'}
+
+
+class DUO_OT_keep_seam(bpy.types.Operator):
+    """Keep the seam where you dragged it: drag the border between the two editors by hand, then
+    tap this, and every fold uses that position"""
+    bl_idname = "duo.keep_seam"
+    bl_label = "Keep Seam Here"
+
+    def execute(self, context):
+        window = context.window
+        settings = _settings(context)
+        if window.workspace.name != FOLD_WORKSPACE or len(window.screen.areas) != 2:
+            self.report({'WARNING'}, "Fold first, then drag the border and tap this")
+            return {'CANCELLED'}
+        crease = read_state()["crease"]
+        areas = list(window.screen.areas)
+        across = crease["across"] if crease else window.height > window.width
+        if across:
+            seam = max(a.y for a in areas)
+            seam_frac = 1.0 - seam / window.height
+            base = crease["y"] if crease else 0.5
+        else:
+            seam = max(a.x for a in areas)
+            seam_frac = seam / window.width
+            base = crease["x"] if crease else 0.5
+        settings.crease_offset = max(-0.2, min(0.2, seam_frac - base))
+        self.report({'INFO'}, f"Seam kept at {seam_frac * 100:.1f}%")
         return {'FINISHED'}
 
 
@@ -280,17 +313,21 @@ class DUO_PT_fold(bpy.types.Panel):
         col.prop(settings, "bottom", text="Bottom" if across else "Right")
         col.operator("duo.swap", icon='UV_SYNC_SELECT')
         col.prop(settings, "automatic")
-        # Big step buttons instead of a slider: sliders and number typing are hard to use by touch.
-        across_word = ("Up", "Down") if across else ("Left", "Right")
+        # Step buttons instead of a slider: sliders and number typing are hard to use by touch.
+        # Coarse (1%) and fine (0.1%) steps, toward the top/left and toward the bottom/right.
+        back, forward = ('TRIA_UP', 'TRIA_DOWN') if across else ('TRIA_LEFT', 'TRIA_RIGHT')
         row = col.row(align=True)
         row.scale_y = 1.3
-        op = row.operator("duo.nudge", text=across_word[0], icon='TRIA_UP' if across else 'TRIA_LEFT')
-        op.step = -0.005  # toward the top / left
-        op = row.operator("duo.nudge", text="Center")
-        op.step = 0.0
-        op = row.operator("duo.nudge", text=across_word[1], icon='TRIA_DOWN' if across else 'TRIA_RIGHT')
-        op.step = 0.005  # toward the bottom / right
-        col.label(text=f"Seam nudge: {settings.crease_offset * 100:+.1f}% of the screen")
+        for label, icon, step in (("1%", back, -0.01), ("0.1%", back, -0.001),
+                                  ("Center", 'NONE', 0.0),
+                                  ("0.1%", forward, 0.001), ("1%", forward, 0.01)):
+            op = row.operator("duo.nudge", text=label, icon=icon)
+            op.step = step
+        row = col.row()
+        row.scale_y = 1.2
+        row.operator("duo.keep_seam", icon='PINNED')
+        col.label(text=f"Seam nudge: {settings.crease_offset * 100:+.1f}% of the screen. "
+                       "Or drag the border, then Keep Seam Here.")
         row = col.row(align=True)
         row.scale_y = 1.4
         row.operator("duo.fold", text="Fold", icon='SPLIT_HORIZONTAL' if across else 'SPLIT_VERTICAL')
@@ -365,7 +402,7 @@ def _watch():
     return 0.4
 
 
-classes = (DuoFoldSettings, DUO_OT_fold, DUO_OT_unfold, DUO_OT_swap, DUO_OT_nudge, DUO_PT_fold)
+classes = (DuoFoldSettings, DUO_OT_fold, DUO_OT_unfold, DUO_OT_swap, DUO_OT_nudge, DUO_OT_keep_seam, DUO_PT_fold)
 
 
 def register():
