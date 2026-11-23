@@ -13,7 +13,8 @@ jobs:
           sdk=$(DEVELOPER_DIR=$x/Contents/Developer xcrun --sdk iphoneos --show-sdk-path)
           echo "SDK $sdk"
           H=$sdk/System/Library/Frameworks/UIKit.framework/Headers
-          for f in $(grep -l -i 'SceneAccessory\|hinge\|ReservedRegion\|cameraCapture' $H/*.h); do
+          cat $H/UIViewReservedRegion.h | sed -n 25,70p; sed -n 20,40p $H/UISceneAccessoryRegistration.h
+          for f in /dev/null; do
             echo "=================== $(basename $f)"
             grep -n -i -B2 -A2 'SceneAccessory\|hinge\|ReservedRegion\|cameraCapture\|API_AVAILABLE(ios(27' "$f" | head -150
           done
