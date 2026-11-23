@@ -20,8 +20,8 @@ jobs:
       - name: Download the built IPA
         uses: actions/download-artifact@v4
         with:
-          name: Blender-iOS-13
-          run-id: 45046877200
+          name: Blender-iOS-19
+          run-id: 45052769669
           github-token: ${{ github.token }}
           path: in
 

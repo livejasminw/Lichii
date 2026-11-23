@@ -30,13 +30,13 @@ EDITORS = [
 
 
 class DuoFoldSettings(bpy.types.PropertyGroup):
-    top: EnumProperty(name="Top half", description="Editor on the upright half",
+    top: EnumProperty(name="Top / left half", description="Editor on the top half (laptop pose) or the left half (book pose)",
                       items=EDITORS, default='VIEW_3D')
-    bottom: EnumProperty(name="Bottom half", description="Editor on the flat half",
+    bottom: EnumProperty(name="Bottom / right half", description="Editor on the bottom half (laptop pose) or the right half (book pose)",
                          items=EDITORS, default='PROPERTIES')
     crease: FloatProperty(
         name="Crease position",
-        description="Where the fold is, as a fraction of the window height from the top",
+        description="Where the fold is, as a fraction of the window from the top (or left)",
         default=0.5, min=0.3, max=0.7, subtype='FACTOR')
     previous_workspace: StringProperty()
 
@@ -59,31 +59,43 @@ def _close_all_but(context, window, screen, keep):
     return len(screen.areas) == 1
 
 
-def _split_at_crease(context, window, screen, area, crease_from_top):
-    """Split `area` horizontally so the boundary lands on the crease. Returns (top, bottom)."""
-    crease_y = window.height * (1.0 - crease_from_top)  # window coordinates count from the bottom
-    factor = (crease_y - area.y) / max(area.height, 1)
-    factor = min(max(factor, 0.1), 0.9)
-    region = next((r for r in area.regions if r.type == 'WINDOW'), area.regions[0])
-    with context.temp_override(window=window, screen=screen, area=area, region=region):
-        bpy.ops.screen.area_split(direction='HORIZONTAL', factor=factor)
-    areas = sorted(screen.areas, key=lambda a: a.y)
+def _split_at_crease(context, window, screen, area, crease_frac):
+    """Split `area` so the boundary lands on the crease. Returns (first, second): top/bottom when
+    the crease runs across (tall window, laptop pose), left/right when it runs down (wide window,
+    book pose)."""
+    across = window.height >= window.width
+    direction = 'HORIZONTAL' if across else 'VERTICAL'
+
+    def pos(a):
+        return a.y if across else a.x
+
+    def size(a):
+        return a.height if across else a.width
+
+    # Window coordinates count from the bottom left; the crease fraction counts from the top/left.
+    crease = window.height * (1.0 - crease_frac) if across else window.width * crease_frac
+    factor = min(max((crease - pos(area)) / max(size(area), 1), 0.1), 0.9)
+
+    def split(target, f):
+        region = next((r for r in target.regions if r.type == 'WINDOW'), target.regions[0])
+        with context.temp_override(window=window, screen=screen, area=target, region=region):
+            bpy.ops.screen.area_split(direction=direction, factor=f)
+        return sorted(screen.areas, key=pos)
+
+    areas = split(area, factor)
     if len(areas) != 2:
         return None, None
-    bottom, top = areas[0], areas[1]
     # area_split's factor may count from the other edge: if the seam missed the crease, redo it.
-    seam = top.y
-    if abs(seam - crease_y) > window.height * 0.05:
-        keep = top if top.height > bottom.height else bottom
+    total = window.height if across else window.width
+    if abs(pos(areas[1]) - crease) > total * 0.05:
+        keep = max(areas, key=size)
         _close_all_but(context, window, screen, keep)
-        region = next((r for r in keep.regions if r.type == 'WINDOW'), keep.regions[0])
-        with context.temp_override(window=window, screen=screen, area=keep, region=region):
-            bpy.ops.screen.area_split(direction='HORIZONTAL', factor=1.0 - factor)
-        areas = sorted(screen.areas, key=lambda a: a.y)
+        areas = split(keep, 1.0 - factor)
         if len(areas) != 2:
             return None, None
-        bottom, top = areas[0], areas[1]
-    return top, bottom
+    low, high = areas
+    # Top half first in the laptop pose (higher y); left half first in the book pose (lower x).
+    return (high, low) if across else (low, high)
 
 
 class DUO_OT_fold(bpy.types.Operator):
@@ -165,8 +177,9 @@ class DUO_PT_fold(bpy.types.Panel):
         layout = self.layout
         settings = _settings(context)
         col = layout.column()
-        col.prop(settings, "top", text="Top")
-        col.prop(settings, "bottom", text="Bottom")
+        wide = context.window.width > context.window.height
+        col.prop(settings, "top", text="Left" if wide else "Top")
+        col.prop(settings, "bottom", text="Right" if wide else "Bottom")
         col.operator("duo.swap", icon='UV_SYNC_SELECT')
         col.prop(settings, "crease", slider=True)
         col.separator()
