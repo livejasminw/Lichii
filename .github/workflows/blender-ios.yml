@@ -152,6 +152,9 @@ jobs:
           rm -rf "$app/Main.storyboard" "$app/Main.storyboardc"
           ibtool --compile "$app/Main.storyboardc" blender/release/ios/Blender.app/Main.storyboard
           /usr/libexec/PlistBuddy -c 'Set :UILaunchStoryboardName Main' "$plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Add :UILaunchStoryboardName string Main' "$plist"
+          # Outer display mirroring needs a running camera session (iOS rule for the iPhone Duo).
+          /usr/libexec/PlistBuddy -c 'Delete :NSCameraUsageDescription' "$plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Add :NSCameraUsageDescription string "iPhone Duo only lets apps show content on the outer display while the camera is running. Blender uses the camera only to mirror itself there; it records nothing."' "$plist"
           # Documents (blender_log.txt, .blend files) visible in the Files app.
           for k in UIFileSharingEnabled LSSupportsOpeningDocumentsInPlace; do
             /usr/libexec/PlistBuddy -c "Delete :$k" "$plist" 2>/dev/null || true

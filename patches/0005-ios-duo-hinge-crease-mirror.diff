@@ -1,0 +1,321 @@
+diff --git a/build_files/cmake/platform/platform_apple.cmake b/build_files/cmake/platform/platform_apple.cmake
+index fbbc01cb..538c99e8 100644
+--- a/build_files/cmake/platform/platform_apple.cmake
++++ b/build_files/cmake/platform/platform_apple.cmake
+@@ -374,7 +374,7 @@ string(APPEND PLATFORM_CFLAGS " -pipe -funsigned-char -fno-strict-aliasing -ffp-
+ if(WITH_APPLE_CROSSPLATFORM)
+   # Link different frameworks for iOS
+   set(PLATFORM_LINKFLAGS
+-    "-fexceptions -framework CoreServices -framework Foundation -framework IOKit -framework UIKit -framework AudioToolbox -framework CoreAudio -framework Metal -framework MetalKit -framework QuartzCore -framework ImageIO -framework GameController -framework CoreGraphics"
++    "-fexceptions -framework CoreServices -framework Foundation -framework IOKit -framework UIKit -framework AudioToolbox -framework CoreAudio -framework Metal -framework MetalKit -framework QuartzCore -framework ImageIO -framework GameController -framework CoreGraphics -framework AVFoundation -framework CoreMedia"
+   )
+   list(APPEND PLATFORM_LINKLIBS "${LIBDIR}/libb2/lib/libb2.a")
+ else()
+diff --git a/intern/ghost/intern/GHOST_SystemIOS.mm b/intern/ghost/intern/GHOST_SystemIOS.mm
+index bd62c897..c21613a4 100644
+--- a/intern/ghost/intern/GHOST_SystemIOS.mm
++++ b/intern/ghost/intern/GHOST_SystemIOS.mm
+@@ -19,6 +19,7 @@
+ #endif
+ 
+ #import <MetalKit/MTKView.h>
++#import <AVFoundation/AVFoundation.h>
+ #import <UIKit/UIKit.h>
+ 
+ #include <sys/sysctl.h>
+@@ -64,6 +65,287 @@ static void ghost_ios_start_once()
+   }
+ }
+ 
++/* -------------------------------------------------------------------- */
++/** \name iPhone Duo: hinge, crease and outer display
++ *
++ * Shares state with the "iPhone Duo Fold" add-on through two small files in the temporary folder:
++ * - duo_fold_state.txt (written here): hinge status, crease position, outer display availability.
++ * - duo_mirror_request.txt (written by the add-on): "1" to mirror Blender on the outer display.
++ * \{ */
++
++static NSString *ghost_duo_path(NSString *name)
++{
++  return [NSTemporaryDirectory() stringByAppendingPathComponent:name];
++}
++
++static UIView *ghost_duo_blender_view()
++{
++  if (!ghost_ios_window_scene) {
++    return nil;
++  }
++  for (UIWindow *window in ghost_ios_window_scene.windows) {
++    if (window.rootViewController.view && !window.hidden) {
++      return window.rootViewController.view;
++    }
++  }
++  return nil;
++}
++
++@interface GHOSTDuoMirrorSceneDelegate : UIResponder <UIWindowSceneDelegate>
++@property(strong, nonatomic) UIWindow *window;
++@property(strong, nonatomic) UIView *snapshot;
++@property(strong, nonatomic) CADisplayLink *link;
++@end
++
++@implementation GHOSTDuoMirrorSceneDelegate
++
++- (void)scene:(UIScene *)scene
++    willConnectToSession:(UISceneSession *)session
++                 options:(UISceneConnectionOptions *)connectionOptions
++{
++  if (![scene isKindOfClass:[UIWindowScene class]]) {
++    return;
++  }
++  UIWindow *window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
++  UIViewController *controller = [[UIViewController alloc] init];
++  controller.view.backgroundColor = [UIColor blackColor];
++  controller.view.clipsToBounds = YES;
++  window.rootViewController = controller;
++  [window makeKeyAndVisible];
++  self.window = window;
++  self.link = [CADisplayLink displayLinkWithTarget:self selector:@selector(refresh:)];
++  self.link.preferredFrameRateRange = CAFrameRateRangeMake(10, 24, 20);
++  [self.link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
++  printf("Blender iOS: outer display mirror connected\n");
++}
++
++- (void)refresh:(CADisplayLink *)link
++{
++  UIView *source = ghost_duo_blender_view();
++  UIView *target = self.window.rootViewController.view;
++  if (!source || !target) {
++    return;
++  }
++  UIView *snapshot = [source snapshotViewAfterScreenUpdates:NO];
++  if (!snapshot) {
++    return;
++  }
++  /* Aspect-fit Blender's whole window on the outer display. */
++  const CGSize from = source.bounds.size;
++  const CGSize to = target.bounds.size;
++  if (from.width <= 0 || from.height <= 0) {
++    return;
++  }
++  const CGFloat scale = MIN(to.width / from.width, to.height / from.height);
++  snapshot.transform = CGAffineTransformMakeScale(scale, scale);
++  snapshot.center = CGPointMake(to.width * 0.5, to.height * 0.5);
++  [self.snapshot removeFromSuperview];
++  [target addSubview:snapshot];
++  self.snapshot = snapshot;
++}
++
++- (void)sceneDidDisconnect:(UIScene *)scene
++{
++  [self.link invalidate];
++  self.link = nil;
++  self.snapshot = nil;
++  self.window = nil;
++  printf("Blender iOS: outer display mirror disconnected\n");
++}
++
++@end
++
++@interface GHOSTDuo : NSObject
++@property(strong, nonatomic) NSTimer *timer;
++@property(strong, nonatomic) id hinge_interaction;
++@property(strong, nonatomic) UIView *hinge_view;
++@property(nonatomic) NSInteger hinge_status;
++@property(nonatomic) CGFloat hinge_angle;
++@property(strong, nonatomic) AVCaptureSession *capture;
++@property(strong, nonatomic) id registration;
++@property(strong, nonatomic) UIViewController *registered_on;
++@property(copy, nonatomic) NSString *last_state;
++@end
++
++@implementation GHOSTDuo
++
+++ (GHOSTDuo *)shared
++{
++  static GHOSTDuo *duo = nil;
++  if (!duo) {
++    duo = [[GHOSTDuo alloc] init];
++    duo.hinge_status = 0;
++    duo.hinge_angle = -1.0;
++  }
++  return duo;
++}
++
++- (void)start
++{
++  [[NSFileManager defaultManager] removeItemAtPath:ghost_duo_path(@"duo_mirror_request.txt")
++                                             error:nil];
++  self.timer = [NSTimer scheduledTimerWithTimeInterval:0.25
++                                                target:self
++                                              selector:@selector(tick:)
++                                              userInfo:nil
++                                               repeats:YES];
++}
++
++- (void)tick:(NSTimer *)timer
++{
++  UIView *view = ghost_duo_blender_view();
++  if (!view) {
++    return;
++  }
++  if (@available(iOS 27.1, *)) {
++    if (self.hinge_view != view) {
++      if (self.hinge_interaction && self.hinge_view) {
++        [self.hinge_view removeInteraction:self.hinge_interaction];
++      }
++      UIHingeInteraction *interaction = [[UIHingeInteraction alloc]
++          initWithUpdateHandler:^(UIHingeInteraction *, UIHingeInteractionUpdate *update) {
++            GHOSTDuo *duo = [GHOSTDuo shared];
++            duo.hinge_status = update.hinge ? update.hinge.status : 0;
++            duo.hinge_angle = update.hinge ? update.hinge.angle * 180.0 / M_PI : -1.0;
++          }];
++      [view addInteraction:interaction];
++      self.hinge_interaction = interaction;
++      self.hinge_view = view;
++    }
++  }
++  [self writeStateForView:view];
++  [self updateMirrorForView:view];
++}
++
++- (void)writeStateForView:(UIView *)view
++{
++  const CGSize size = view.bounds.size;
++  /* Crease: the division reserved region (present even when inactive). Fractions of the view,
++   * x from the left, y from the top. */
++  NSString *crease = @"none";
++  if (@available(iOS 27.1, *)) {
++    NSArray<UIViewReservedRegion *> *regions = [view
++        reservedRegionsOfKind:[UIViewReservedRegionKind divisionRegionKind]
++                      options:UIViewReservedRegionQueryOptionsIncludeInactive];
++    for (UIViewReservedRegion *region in regions) {
++      const CGRect f = region.frame;
++      const UIEdgeInsets m = region.margins;
++      const CGRect r = CGRectMake(f.origin.x + m.left,
++                                  f.origin.y + m.top,
++                                  f.size.width - m.left - m.right,
++                                  f.size.height - m.top - m.bottom);
++      if (size.width > 0 && size.height > 0) {
++        crease = [NSString stringWithFormat:@"%s %.5f %.5f %.5f %.5f %d",
++                                            r.size.width > r.size.height ? "across" : "down",
++                                            CGRectGetMidX(r) / size.width,
++                                            CGRectGetMidY(r) / size.height,
++                                            r.size.width / size.width,
++                                            r.size.height / size.height,
++                                            region.isActive ? 1 : 0];
++      }
++      break;
++    }
++  }
++  BOOL available = NO;
++  if (@available(iOS 27.1, *)) {
++    available = self.registration && ((UISceneAccessoryRegistration *)self.registration).isAvailable;
++  }
++  NSString *state = [NSString
++      stringWithFormat:@"hinge %ld %.1f\ncrease %@\nview %.0f %.0f\nmirror %d %d\n",
++                       (long)self.hinge_status,
++                       self.hinge_angle,
++                       crease,
++                       size.width,
++                       size.height,
++                       self.capture ? 1 : 0,
++                       available ? 1 : 0];
++  if (![state isEqualToString:self.last_state]) {
++    self.last_state = state;
++    [state writeToFile:ghost_duo_path(@"duo_fold_state.txt")
++            atomically:YES
++              encoding:NSUTF8StringEncoding
++                 error:nil];
++    printf("Blender iOS Duo: %s", [[state stringByReplacingOccurrencesOfString:@"\n"
++                                                                    withString:@" | "]
++                                     UTF8String]);
++    printf("\n");
++  }
++}
++
++- (void)updateMirrorForView:(UIView *)view
++{
++  NSString *request = [NSString stringWithContentsOfFile:ghost_duo_path(@"duo_mirror_request.txt")
++                                                encoding:NSUTF8StringEncoding
++                                                   error:nil];
++  const BOOL wanted = request && [request hasPrefix:@"1"];
++  if (wanted && !self.capture) {
++    [self startMirrorOn:view];
++  }
++  else if (!wanted && self.capture) {
++    [self stopMirror];
++  }
++}
++
++- (void)startMirrorOn:(UIView *)view
++{
++  if (@available(iOS 27.1, *)) {
++    /* The outer display is only offered to apps with a running camera session. */
++    AVCaptureDevice *camera = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
++    NSError *error = nil;
++    AVCaptureDeviceInput *input = camera ? [AVCaptureDeviceInput deviceInputWithDevice:camera
++                                                                                 error:&error] :
++                                           nil;
++    AVCaptureSession *session = [[AVCaptureSession alloc] init];
++    if (input && [session canAddInput:input]) {
++      [session addInput:input];
++    }
++    else {
++      printf("Blender iOS: no camera for the outer display (%s)\n",
++             error ? error.localizedDescription.UTF8String : "no device");
++    }
++    AVCaptureVideoDataOutput *output = [[AVCaptureVideoDataOutput alloc] init];
++    if ([session canAddOutput:output]) {
++      [session addOutput:output];
++    }
++    self.capture = session;
++    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
++      [session startRunning];
++    });
++
++    UIViewController *controller = view.window.rootViewController;
++    UISceneConfiguration *config = [[UISceneConfiguration alloc]
++        initWithName:nil
++         sessionRole:UIWindowSceneSessionRoleCameraCaptureAccessory];
++    config.delegateClass = [GHOSTDuoMirrorSceneDelegate class];
++    UISceneAccessory *accessory = [UISceneAccessory
++        cameraCaptureSceneAccessoryWithConfiguration:config];
++    self.registration = [controller registerSceneAccessory:accessory];
++    self.registered_on = controller;
++    printf("Blender iOS: outer display mirror requested\n");
++  }
++}
++
++- (void)stopMirror
++{
++  if (@available(iOS 27.1, *)) {
++    if (self.registration && self.registered_on) {
++      [self.registered_on unregisterSceneAccessory:self.registration];
++    }
++  }
++  self.registration = nil;
++  self.registered_on = nil;
++  AVCaptureSession *session = self.capture;
++  self.capture = nil;
++  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
++    [session stopRunning];
++  });
++  printf("Blender iOS: outer display mirror stopped\n");
++}
++
++@end
++
++/** \} */
++
+ @interface GHOSTSceneDelegate : UIResponder <UIWindowSceneDelegate>
+ @property(strong, nonatomic) UIWindow *window;
+ @end
+@@ -81,6 +363,7 @@ static void ghost_ios_start_once()
+            ghost_ios_window_scene.coordinateSpace.bounds.size.height);
+   }
+   ghost_ios_start_once();
++  [[GHOSTDuo shared] start];
+   for (UIOpenURLContext *context in connectionOptions.URLContexts) {
+     GHOST_SystemIOS *system = static_cast<GHOST_SystemIOS *>(GHOST_ISystem::getSystem());
+     if (system) {
