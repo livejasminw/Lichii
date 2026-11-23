@@ -3,14 +3,18 @@ on:
   push:
     branches: [blender-ios]
     paths: ['.github/workflows/probe-xcode.yml']
+  workflow_dispatch:
 jobs:
   probe:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-26, macos-15, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: xcode-27
     steps:
       - run: |
-          sw_vers; ls -d /Applications/Xcode*.app; xcodebuild -version
-          for x in /Applications/Xcode*.app; do echo "== $x"; DEVELOPER_DIR=$x/Contents/Developer xcodebuild -showsdks 2>/dev/null | grep -i iphoneos; done
+          x=$(for a in /Applications/Xcode_27*.app; do [ -L "$a" ] || echo "$a"; done | sort -V | tail -1)
+          sdk=$(DEVELOPER_DIR=$x/Contents/Developer xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK $sdk"
+          H=$sdk/System/Library/Frameworks/UIKit.framework/Headers
+          for f in $(grep -l -i 'SceneAccessory\|hinge\|ReservedRegion\|cameraCapture' $H/*.h); do
+            echo "=================== $(basename $f)"
+            grep -n -i -B2 -A2 'SceneAccessory\|hinge\|ReservedRegion\|cameraCapture\|API_AVAILABLE(ios(27' "$f" | head -150
+          done
+          grep -rn 'windowCameraCaptureAccessory\|CameraCaptureAccessory' $H | head
