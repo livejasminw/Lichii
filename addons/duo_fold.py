@@ -248,6 +248,21 @@ class DUO_OT_swap(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class DUO_OT_nudge(bpy.types.Operator):
+    """Move the seam a little, or put it back on the crease"""
+    bl_idname = "duo.nudge"
+    bl_label = "Nudge Seam"
+
+    step: FloatProperty(default=0.0)
+
+    def execute(self, context):
+        settings = _settings(context)
+        settings.crease_offset = 0.0 if self.step == 0.0 else settings.crease_offset + self.step
+        if context.window.workspace.name == FOLD_WORKSPACE:
+            fold(context, context.window)
+        return {'FINISHED'}
+
+
 class DUO_PT_fold(bpy.types.Panel):
     bl_label = "iPhone Duo"
     bl_space_type = 'TOPBAR'
@@ -265,7 +280,17 @@ class DUO_PT_fold(bpy.types.Panel):
         col.prop(settings, "bottom", text="Bottom" if across else "Right")
         col.operator("duo.swap", icon='UV_SYNC_SELECT')
         col.prop(settings, "automatic")
-        col.prop(settings, "crease_offset", slider=True)
+        # Big step buttons instead of a slider: sliders and number typing are hard to use by touch.
+        across_word = ("Up", "Down") if across else ("Left", "Right")
+        row = col.row(align=True)
+        row.scale_y = 1.3
+        op = row.operator("duo.nudge", text=across_word[0], icon='TRIA_UP' if across else 'TRIA_LEFT')
+        op.step = -0.005  # toward the top / left
+        op = row.operator("duo.nudge", text="Center")
+        op.step = 0.0
+        op = row.operator("duo.nudge", text=across_word[1], icon='TRIA_DOWN' if across else 'TRIA_RIGHT')
+        op.step = 0.005  # toward the bottom / right
+        col.label(text=f"Seam nudge: {settings.crease_offset * 100:+.1f}% of the screen")
         row = col.row(align=True)
         row.scale_y = 1.4
         row.operator("duo.fold", text="Fold", icon='SPLIT_HORIZONTAL' if across else 'SPLIT_VERTICAL')
@@ -340,7 +365,7 @@ def _watch():
     return 0.4
 
 
-classes = (DuoFoldSettings, DUO_OT_fold, DUO_OT_unfold, DUO_OT_swap, DUO_PT_fold)
+classes = (DuoFoldSettings, DUO_OT_fold, DUO_OT_unfold, DUO_OT_swap, DUO_OT_nudge, DUO_PT_fold)
 
 
 def register():
