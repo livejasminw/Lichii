@@ -116,7 +116,7 @@ jobs:
           </dict></plist>
           PL
           sed -i '' 's/^          //' ent.plist
-          find $app -name '*.dylib' -exec codesign -f -s - {} \;
+          find $app \( -name '*.dylib' -o -name '*.so' \) -exec codesign -f -s - {} \;
           codesign -f -s - $app/Frameworks/MoltenVK.framework
           codesign -f -s - --entitlements ent.plist $app
           du -sh $app; ls $app
