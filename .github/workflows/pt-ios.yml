@@ -61,6 +61,8 @@ jobs:
             -DVulkan_LIBRARY="$MVK_SLICE/MoltenVK.framework/MoltenVK" \
             -DPT_IOS=ON -DPT_METALFX=ON \
             2>&1 | tee ../configure.log | tail -60
+          # Lua's os.execute: system() does not exist on iOS (and the game's scripts don't run programs)
+          sed -i '' 's/system(luaL_optstring(L, 1, NULL))/-1/' build/ios/_deps/lua51-src/src/loslib.c
 
       - name: Build
         run: |
