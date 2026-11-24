@@ -1,0 +1,94 @@
+name: P.T. iOS build
+
+on:
+  push:
+    branches: [pt-ios]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ci
+
+      - name: Tools
+        run: |
+          x=$(for a in /Applications/Xcode_27*.app; do [ -L "$a" ] || [ ! -d "$a" ] || echo "$a"; done | sort -V | tail -1)
+          [ -n "$x" ] && sudo xcode-select -s "$x/Contents/Developer"
+          xcodebuild -version
+          brew install ninja shaderc vulkan-headers ccache || true
+          which glslc
+
+      - name: Get the port
+        run: |
+          git clone https://github.com/LoreanXavier/pt-pc.git pt
+          cd pt
+          git checkout -q 54144ac
+          git log -1 --format='%h %ad %s' --date=short
+          shopt -s nullglob
+          for p in ../ci/patches/*.diff; do echo "Applying $p"; git apply --whitespace=nowarn "$p"; done
+
+      - name: MoltenVK for iOS
+        run: |
+          curl -fsSL -o mvk.tar https://github.com/KhronosGroup/MoltenVK/releases/download/v1.4.2/MoltenVK-ios.tar
+          tar xf mvk.tar
+          fw=$(find "$PWD/MoltenVK" -path '*dynamic*' -name MoltenVK.xcframework -type d | head -1)
+          [ -n "$fw" ] || fw=$(find "$PWD/MoltenVK" -name MoltenVK.xcframework -type d | head -1)
+          slice=$(find "$fw" -maxdepth 1 -type d -name 'ios-arm64' | head -1)
+          echo "MoltenVK slice: $slice"; ls "$slice"
+          echo "MVK_SLICE=$slice" >> "$GITHUB_ENV"
+
+      - name: ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: pt-ios-ccache-${{ github.run_number }}
+          restore-keys: pt-ios-ccache-
+
+      - name: Configure
+        run: |
+          cd pt
+          vk_inc=$(brew --prefix vulkan-headers)/include
+          cmake -G Ninja -B build/ios \
+            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
+            -DVulkan_INCLUDE_DIR="$vk_inc" -DVulkan_GLSLC_EXECUTABLE="$(which glslc)" \
+            -DVulkan_LIBRARY="$MVK_SLICE/MoltenVK.framework/MoltenVK" \
+            -DPT_IOS=ON -DPT_METALFX=ON \
+            2>&1 | tee ../configure.log | tail -60
+
+      - name: Build
+        run: |
+          cd pt
+          export CCACHE_DIR=~/Library/Caches/ccache
+          set -o pipefail
+          ninja -C build/ios -k 0 pt 2>&1 | tee ../build.log | grep -E 'error|FAILED' | head -200 || true
+          test -e build/ios/pt || test -d build/ios/pt.app
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: pt-ios-ccache-${{ github.run_number }}
+
+      - name: Show errors
+        if: failure()
+        run: |
+          grep -n -B2 -A10 'CMake Error' configure.log | head -120 || true
+          grep -n -A6 'error:' build.log | head -300 || true
+          echo ---- tail; tail -40 build.log 2>/dev/null || true
+
+      - name: Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pt-ios-logs-${{ github.run_number }}
+          path: |
+            configure.log
+            build.log
