@@ -70,6 +70,66 @@ jobs:
           ninja -C build/ios -k 0 pt 2>&1 | tee ../build.log | grep -E 'error|FAILED' | head -200 || true
           test -e build/ios/pt || test -d build/ios/pt.app
 
+      - name: App bundle
+        run: |
+          b=pt/build/ios
+          echo "Build folder:"; ls -la $b | grep -v '\.ninja\|CMake\|\.cmake' | head -60
+          app=out/Payload/PT.app
+          mkdir -p $app/Frameworks
+          cp $b/pt $app/pt
+          cp -R "$MVK_SLICE/MoltenVK.framework" $app/Frameworks/
+          for d in shaders voice fonts survival licenses; do [ -d $b/$d ] && cp -R $b/$d $app/; done
+          [ -f $b/extras.pak ] && cp $b/extras.pak $app/
+          rm -f $app/shaders/*.glsl $app/shaders/*.d 2>/dev/null || true
+          cp pt/README.md $app/ || true
+          p=$app/Info.plist
+          /usr/libexec/PlistBuddy \
+            -c 'Add :CFBundleExecutable string pt' \
+            -c 'Add :CFBundleIdentifier string com.livejasminw.pt' \
+            -c 'Add :CFBundleName string P.T.' \
+            -c 'Add :CFBundleDisplayName string P.T.' \
+            -c 'Add :CFBundlePackageType string APPL' \
+            -c 'Add :CFBundleShortVersionString string 1.0' \
+            -c 'Add :CFBundleVersion string ${{ github.run_number }}' \
+            -c 'Add :CFBundleInfoDictionaryVersion string 6.0' \
+            -c 'Add :CFBundleSupportedPlatforms array' -c 'Add :CFBundleSupportedPlatforms:0 string iPhoneOS' \
+            -c 'Add :MinimumOSVersion string 17.0' \
+            -c 'Add :UIDeviceFamily array' -c 'Add :UIDeviceFamily:0 integer 1' -c 'Add :UIDeviceFamily:1 integer 2' \
+            -c 'Add :UILaunchScreen dict' \
+            -c 'Add :UIRequiresFullScreen bool true' \
+            -c 'Add :UIStatusBarHidden bool true' \
+            -c 'Add :UIFileSharingEnabled bool true' \
+            -c 'Add :LSSupportsOpeningDocumentsInPlace bool true' \
+            -c 'Add :UISupportedInterfaceOrientations array' \
+            -c 'Add :UISupportedInterfaceOrientations:0 string UIInterfaceOrientationLandscapeLeft' \
+            -c 'Add :UISupportedInterfaceOrientations:1 string UIInterfaceOrientationLandscapeRight' \
+            -c 'Add :UISupportedInterfaceOrientations:2 string UIInterfaceOrientationPortrait' \
+            -c 'Add :NSMicrophoneUsageDescription string "P.T. listens for one spoken word in one part of the game, as on the PS4."' \
+            -c 'Add :GCSupportsControllerUserInteraction bool true' \
+            -c 'Add :DTPlatformName string iphoneos' \
+            -c 'Add :DTSDKName string iphoneos27.2' \
+            "$p"
+          printf 'APPL????' > $app/PkgInfo
+          cat > ent.plist <<'PL'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>com.apple.developer.kernel.increased-memory-limit</key><true/>
+          </dict></plist>
+          PL
+          sed -i '' 's/^          //' ent.plist
+          find $app -name '*.dylib' -exec codesign -f -s - {} \;
+          codesign -f -s - $app/Frameworks/MoltenVK.framework
+          codesign -f -s - --entitlements ent.plist $app
+          du -sh $app; ls $app
+          (cd out && zip -qr PT-iOS.ipa Payload)
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: PT-iOS-${{ github.run_number }}
+          path: out/PT-iOS.ipa
+
       - name: Save ccache
         if: always()
         uses: actions/cache/save@v4
