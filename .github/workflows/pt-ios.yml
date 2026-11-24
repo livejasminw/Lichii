@@ -89,33 +89,24 @@ jobs:
           rm -f $app/libMoltenVK.dylib
           rm -f $app/shaders/*.glsl $app/shaders/*.d 2>/dev/null || true
           cp pt/README.md $app/ || true
-          p=$app/Info.plist
-          /usr/libexec/PlistBuddy \
-            -c 'Add :CFBundleExecutable string pt' \
-            -c 'Add :CFBundleIdentifier string com.livejasminw.pt' \
-            -c 'Add :CFBundleName string P.T.' \
-            -c 'Add :CFBundleDisplayName string P.T.' \
-            -c 'Add :CFBundlePackageType string APPL' \
-            -c 'Add :CFBundleShortVersionString string 1.0' \
-            -c 'Add :CFBundleVersion string ${{ github.run_number }}' \
-            -c 'Add :CFBundleInfoDictionaryVersion string 6.0' \
-            -c 'Add :CFBundleSupportedPlatforms array' -c 'Add :CFBundleSupportedPlatforms:0 string iPhoneOS' \
-            -c 'Add :MinimumOSVersion string 17.0' \
-            -c 'Add :UIDeviceFamily array' -c 'Add :UIDeviceFamily:0 integer 1' -c 'Add :UIDeviceFamily:1 integer 2' \
-            -c 'Add :UILaunchScreen dict' \
-            -c 'Add :UIRequiresFullScreen bool true' \
-            -c 'Add :UIStatusBarHidden bool true' \
-            -c 'Add :UIFileSharingEnabled bool true' \
-            -c 'Add :LSSupportsOpeningDocumentsInPlace bool true' \
-            -c 'Add :UISupportedInterfaceOrientations array' \
-            -c 'Add :UISupportedInterfaceOrientations:0 string UIInterfaceOrientationLandscapeLeft' \
-            -c 'Add :UISupportedInterfaceOrientations:1 string UIInterfaceOrientationLandscapeRight' \
-            -c 'Add :UISupportedInterfaceOrientations:2 string UIInterfaceOrientationPortrait' \
-            -c 'Add :NSMicrophoneUsageDescription string "P.T. listens for one spoken word in one part of the game, as on the PS4."' \
-            -c 'Add :GCSupportsControllerUserInteraction bool true' \
-            -c 'Add :DTPlatformName string iphoneos' \
-            -c 'Add :DTSDKName string iphoneos27.2' \
-            "$p"
+          ls -d $b/shaders $b/voice 2>/dev/null; ls $b/shaders | head -5; ls $b/voice | head -20
+          python3 - "$app/Info.plist" "${{ github.run_number }}" <<'PY'
+          import plistlib, sys
+          plistlib.dump({
+              "CFBundleExecutable": "pt", "CFBundleIdentifier": "com.livejasminw.pt",
+              "CFBundleName": "P.T.", "CFBundleDisplayName": "P.T.", "CFBundlePackageType": "APPL",
+              "CFBundleShortVersionString": "1.0", "CFBundleVersion": sys.argv[2],
+              "CFBundleInfoDictionaryVersion": "6.0", "CFBundleSupportedPlatforms": ["iPhoneOS"],
+              "MinimumOSVersion": "17.0", "UIDeviceFamily": [1, 2], "UILaunchScreen": {},
+              "UIRequiresFullScreen": True, "UIStatusBarHidden": True,
+              "UIFileSharingEnabled": True, "LSSupportsOpeningDocumentsInPlace": True,
+              "UISupportedInterfaceOrientations": ["UIInterfaceOrientationLandscapeLeft",
+                  "UIInterfaceOrientationLandscapeRight", "UIInterfaceOrientationPortrait"],
+              "NSMicrophoneUsageDescription": "P.T. listens for one spoken word in one part of the game, as on the PS4.",
+              "GCSupportsControllerUserInteraction": True,
+              "DTPlatformName": "iphoneos", "DTSDKName": "iphoneos27.2",
+          }, open(sys.argv[1], "wb"))
+          PY
           printf 'APPL????' > $app/PkgInfo
           cat > ent.plist <<'PL'
           <?xml version="1.0" encoding="UTF-8"?>
