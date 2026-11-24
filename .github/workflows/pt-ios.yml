@@ -77,11 +77,16 @@ jobs:
           b=pt/build/ios
           echo "Build folder:"; ls -la $b | grep -v '\.ninja\|CMake\|\.cmake' | head -60
           app=out/Payload/PT.app
+          # On iOS CMake makes pt a bundle (pt.app/pt); its runtime files land next to the executable.
+          echo "pt.app:"; ls -la $b/pt.app | head -40
+          mkdir -p out/Payload
+          cp -R $b/pt.app $app
+          rm -f $app/Info.plist
           mkdir -p $app/Frameworks
-          cp $b/pt $app/pt
           cp -R "$MVK_SLICE/MoltenVK.framework" $app/Frameworks/
-          for d in shaders voice fonts survival licenses; do [ -d $b/$d ] && cp -R $b/$d $app/; done
-          [ -f $b/extras.pak ] && cp $b/extras.pak $app/
+          for d in shaders voice fonts survival licenses; do [ -d $b/$d ] && [ ! -d $app/$d ] && cp -R $b/$d $app/; done
+          [ -f $b/extras.pak ] && [ ! -f $app/extras.pak ] && cp $b/extras.pak $app/
+          rm -f $app/libMoltenVK.dylib
           rm -f $app/shaders/*.glsl $app/shaders/*.d 2>/dev/null || true
           cp pt/README.md $app/ || true
           p=$app/Info.plist
