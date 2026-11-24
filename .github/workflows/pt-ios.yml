@@ -98,7 +98,11 @@ jobs:
               "CFBundleShortVersionString": "1.0", "CFBundleVersion": sys.argv[2],
               "CFBundleInfoDictionaryVersion": "6.0", "CFBundleSupportedPlatforms": ["iPhoneOS"],
               "MinimumOSVersion": "17.0", "UIDeviceFamily": [1, 2], "UILaunchScreen": {},
-              "UIRequiresFullScreen": True, "UIStatusBarHidden": True,
+              "UIStatusBarHidden": True,
+              # scene lifecycle (SDL's own scene delegate): the iPhone Duo gives the app the whole display when folded
+              "UIApplicationSceneManifest": {"UIApplicationSupportsMultipleScenes": False, "UISceneConfigurations": {
+                  "UIWindowSceneSessionRoleApplication": [{"UISceneConfigurationName": "SDLSceneConfiguration",
+                                                           "UISceneDelegateClassName": "SDLUIKitSceneDelegate"}]}},
               "UIFileSharingEnabled": True, "LSSupportsOpeningDocumentsInPlace": True,
               "UISupportedInterfaceOrientations": ["UIInterfaceOrientationLandscapeLeft",
                   "UIInterfaceOrientationLandscapeRight", "UIInterfaceOrientationPortrait"],

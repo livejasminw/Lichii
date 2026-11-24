@@ -34,15 +34,16 @@ index 0000000..38c7dcf
 +}  // namespace pt::ios
 diff --git a/src/engine/platform/ios_touch_pad.mm b/src/engine/platform/ios_touch_pad.mm
 new file mode 100644
-index 0000000..e82c568
+index 0000000..1525466
 --- /dev/null
 +++ b/src/engine/platform/ios_touch_pad.mm
-@@ -0,0 +1,331 @@
+@@ -0,0 +1,499 @@
 +#include "engine/platform/ios_touch_pad.h"
 +
 +#include <SDL3/SDL.h>
 +
 +#import <GameController/GameController.h>
++#import <QuartzCore/QuartzCore.h>
 +#import <UIKit/UIKit.h>
 +
 +#include <cmath>
@@ -88,6 +89,15 @@ index 0000000..e82c568
 +@end
 +
 +@interface PTTouchPadView : UIView
++/* YES while the pad has its own half of the screen (iPhone Duo split): drawn as a controller surface */
++@property(nonatomic) BOOL splitMode;
++- (void)setSplitTitle:(NSString*)title;
++@end
++
++@interface PTDuoLayout : NSObject
+++ (instancetype)shared;
++- (void)flip;
++- (void)cycleSplit;
 +@end
 +
 +@implementation PTTouchPadView {
@@ -96,8 +106,12 @@ index 0000000..e82c568
 +    PTStick* _move;
 +    PTStick* _look;
 +    UIButton* _toggle;
++    UIButton* _flip;
++    UIButton* _split;
 +    BOOL _hidden_by_user;
 +}
++
++@synthesize splitMode = _splitMode;
 +
 +- (instancetype)initWithFrame:(CGRect)frame {
 +    self = [super initWithFrame:frame];
@@ -122,11 +136,36 @@ index 0000000..e82c568
 +    _toggle.layer.cornerRadius = 8;
 +    [_toggle addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];
 +    [self addSubview:_toggle];
++    _flip = [self barButton:@"Flip" action:@selector(flipHalves)];
++    _split = [self barButton:@"Split: Auto" action:@selector(cycleSplit)];
 +
 +    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(controllersChanged) name:GCControllerDidConnectNotification object:nil];
 +    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(controllersChanged) name:GCControllerDidDisconnectNotification object:nil];
 +    [self controllersChanged];
 +    return self;
++}
++
++- (UIButton*)barButton:(NSString*)title action:(SEL)action {
++    UIButton* b = [UIButton buttonWithType:UIButtonTypeSystem];
++    [b setTitle:title forState:UIControlStateNormal];
++    b.titleLabel.font = [UIFont boldSystemFontOfSize:12];
++    b.tintColor = [UIColor colorWithWhite:1 alpha:0.6];
++    b.backgroundColor = [UIColor colorWithWhite:0 alpha:0.25];
++    b.layer.cornerRadius = 8;
++    [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
++    [self addSubview:b];
++    return b;
++}
++
++- (void)flipHalves { [[PTDuoLayout shared] flip]; }
++- (void)cycleSplit { [[PTDuoLayout shared] cycleSplit]; }
++- (void)setSplitTitle:(NSString*)title { [_split setTitle:title forState:UIControlStateNormal]; }
++
++- (void)setSplitMode:(BOOL)split {
++    _splitMode = split;
++    self.backgroundColor = split ? [UIColor colorWithRed:0.07 green:0.07 blue:0.08 alpha:1] : UIColor.clearColor;
++    _flip.hidden = !split;
++    [self setNeedsLayout];
 +}
 +
 +- (void)toggle {
@@ -180,7 +219,11 @@ index 0000000..e82c568
 +    [self addButton:@"≡" at:CGPointMake(s.width * 0.5 + unit * 0.8, top) radius:r * 0.8 button:SDL_GAMEPAD_BUTTON_START trigger:0];
 +    [self addButton:@"L3" at:CGPointMake(inset.left + unit * 0.9, s.height - inset.bottom - unit * 0.8) radius:r * 0.8 button:SDL_GAMEPAD_BUTTON_LEFT_STICK trigger:0];
 +    [self addButton:@"R3" at:CGPointMake(face.x - unit * 2.3, s.height - inset.bottom - unit * 0.8) radius:r * 0.8 button:SDL_GAMEPAD_BUTTON_RIGHT_STICK trigger:0];
-+    _toggle.frame = CGRectMake(s.width * 0.5 - unit * 1.6, top - 14, unit * 1.4, 28);
++    const CGFloat bw = std::fmax(unit * 1.5, 64.0), by = top - 14;
++    _split.frame = CGRectMake(s.width * 0.5 - bw * 1.6 - 6, by, bw * 1.6, 28);
++    _toggle.frame = CGRectMake(s.width * 0.5 - bw - 6 - bw * 1.6 - 6, by, bw, 28);
++    _flip.frame = CGRectMake(s.width * 0.5 + unit * 0.8 + r + 8, by, bw, 28);
++    _toggle.hidden = _splitMode;
 +    [self setNeedsDisplay];
 +}
 +
@@ -330,8 +373,132 @@ index 0000000..e82c568
 +/* Touches outside the controls still reach the game only when the pad is hidden. */
 +- (UIView*)hitTest:(CGPoint)point withEvent:(UIEvent*)event {
 +    UIView* hit = [super hitTest:point withEvent:event];
-+    if (hit == _toggle) return hit;
++    if (hit == _toggle || hit == _flip || hit == _split) return hit;
 +    return _hidden_by_user ? nil : hit;
++}
++
++@end
++
++/* iPhone Duo: the game on one half, the controller on the other. The split follows the crease that iOS reports (top and
++   bottom in the laptop pose, left and right in the book pose); Flip swaps the halves. Split: Auto splits while the phone
++   is partly folded, On always, Off never. */
++@implementation PTDuoLayout {
++    __weak UIView* _host;
++    __weak PTTouchPadView* _pad;
++    id _hinge;
++    NSInteger _hinge_status; /* UIHingeStatus: 0 unknown, 1 closed, 2 partly open, 3 open */
++    int _mode;               /* 0 auto, 1 on, 2 off */
++    BOOL _flipped;
++    NSTimer* _timer;
++    CGRect _last_game;
++}
++
+++ (instancetype)shared {
++    static PTDuoLayout* layout = [PTDuoLayout new];
++    return layout;
++}
++
++- (void)attachHost:(UIView*)host pad:(PTTouchPadView*)pad {
++    _host = host;
++    _pad = pad;
++    _last_game = CGRectNull;
++    if (@available(iOS 27.1, *)) {
++        UIHingeInteraction* hinge = [[UIHingeInteraction alloc] initWithUpdateHandler:^(UIHingeInteraction*, UIHingeInteractionUpdate* update) {
++            PTDuoLayout* me = [PTDuoLayout shared];
++            NSInteger status = update.hinge ? update.hinge.status : 0;
++            if (status != me->_hinge_status) {
++                me->_hinge_status = status;
++                pt::LogInfo("iPhone Duo: hinge {}", static_cast<int>(status));
++                [me apply];
++            }
++        }];
++        [host addInteraction:hinge];
++        _hinge = hinge;
++    }
++    /* SDL adds its Metal view after the window appears, and the hinge or the bounds can change at any time */
++    _timer = [NSTimer scheduledTimerWithTimeInterval:0.25 target:self selector:@selector(apply) userInfo:nil repeats:YES];
++    [self apply];
++}
++
++- (void)flip {
++    _flipped = !_flipped;
++    _last_game = CGRectNull;
++    [self apply];
++}
++
++- (void)cycleSplit {
++    _mode = (_mode + 1) % 3;
++    _last_game = CGRectNull;
++    [_pad setSplitTitle:@[ @"Split: Auto", @"Split: On", @"Split: Off" ][_mode]];
++    [self apply];
++}
++
++- (UIView*)metalViewIn:(UIView*)host {
++    for (UIView* v in host.subviews) {
++        if ([v.layer isKindOfClass:[CAMetalLayer class]]) return v;
++    }
++    return [host.layer isKindOfClass:[CAMetalLayer class]] ? host : nil;
++}
++
++/* The crease in host coordinates, or CGRectNull */
++- (CGRect)crease {
++    if (@available(iOS 27.1, *)) {
++        NSArray<UIViewReservedRegion*>* regions = [_host reservedRegionsOfKind:[UIViewReservedRegionKind divisionRegionKind]
++                                                                       options:UIViewReservedRegionQueryOptionsIncludeInactive];
++        for (UIViewReservedRegion* region in regions) {
++            const CGRect f = region.frame;
++            const UIEdgeInsets m = region.margins;
++            return CGRectMake(f.origin.x + m.left, f.origin.y + m.top, f.size.width - m.left - m.right, f.size.height - m.top - m.bottom);
++        }
++    }
++    return CGRectNull;
++}
++
++- (void)apply {
++    UIView* host = _host;
++    PTTouchPadView* pad = _pad;
++    if (!host || !pad) return;
++    UIView* metal = [self metalViewIn:host];
++    const CGRect bounds = host.bounds;
++    const BOOL split = _mode == 1 || (_mode == 0 && _hinge_status == 2);
++    CGRect game = bounds, controls = bounds;
++    if (split) {
++        CGRect crease = [self crease];
++        BOOL across;
++        if (CGRectIsNull(crease) || CGRectIsEmpty(crease)) {
++            /* no crease reported: split the longer side in half */
++            across = bounds.size.height >= bounds.size.width;
++            crease = across ? CGRectMake(0, CGRectGetMidY(bounds), bounds.size.width, 0) : CGRectMake(CGRectGetMidX(bounds), 0, 0, bounds.size.height);
++        } else {
++            across = crease.size.width >= crease.size.height;
++        }
++        CGRect first, second;
++        if (across) {
++            first = CGRectMake(0, 0, bounds.size.width, CGRectGetMinY(crease));
++            second = CGRectMake(0, CGRectGetMaxY(crease), bounds.size.width, bounds.size.height - CGRectGetMaxY(crease));
++        } else {
++            first = CGRectMake(0, 0, CGRectGetMinX(crease), bounds.size.height);
++            second = CGRectMake(CGRectGetMaxX(crease), 0, bounds.size.width - CGRectGetMaxX(crease), bounds.size.height);
++        }
++        /* game on top (or left), controller on the bottom (or right); Flip swaps them */
++        game = _flipped ? second : first;
++        controls = _flipped ? first : second;
++    }
++    if (pad.splitMode != split) pad.splitMode = split;
++    if (!CGRectEqualToRect(pad.frame, controls)) {
++        pad.autoresizingMask = UIViewAutoresizingNone;
++        pad.frame = controls;
++    }
++    if (metal && !CGRectEqualToRect(game, _last_game)) {
++        _last_game = game;
++        metal.autoresizingMask = UIViewAutoresizingNone;
++        metal.frame = game;
++        [metal setNeedsLayout];
++        [metal layoutIfNeeded];
++        pt::LogInfo("iPhone Duo: game {}x{} at {},{}; controls {}x{}{}", game.size.width, game.size.height, game.origin.x, game.origin.y,
++                    controls.size.width, controls.size.height, split ? " (split)" : "");
++    }
++    [host bringSubviewToFront:pad];
 +}
 +
 +@end
@@ -365,6 +532,7 @@ index 0000000..e82c568
 +    }
 +    PTTouchPadView* pad = [[PTTouchPadView alloc] initWithFrame:host.bounds];
 +    [host addSubview:pad];
++    [[PTDuoLayout shared] attachHost:host pad:pad];
 +    LogInfo("touch controls: attached");
 +}
 +
