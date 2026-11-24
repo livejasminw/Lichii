@@ -1,0 +1,393 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d3d9ab9..762a682 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -210,6 +210,12 @@ include(cmake/OpenXR.cmake)
+ if(APPLE)
+   include(cmake/MacOS.cmake)
+ endif()
++if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
++  # iPhone: on-screen touch controls driving a virtual gamepad
++  target_sources(pt_engine PRIVATE src/engine/platform/ios_touch_pad.mm)
++  set_source_files_properties(src/engine/platform/ios_touch_pad.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
++  target_link_libraries(pt_engine PUBLIC "-framework UIKit" "-framework GameController")
++endif()
+ list(APPEND PT_UPSCALER_RUNTIME_FILES ${PT_OPENXR_RUNTIME_FILES})
+ list(APPEND PT_UPSCALER_NOTICES ${PT_OPENXR_NOTICES})
+ list(APPEND PT_UPSCALER_NOTICES "${google_sbc_SOURCE_DIR}/LICENSE|google-libsbc-Apache-2.0.txt")
+diff --git a/src/engine/platform/ios_touch_pad.h b/src/engine/platform/ios_touch_pad.h
+new file mode 100644
+index 0000000..38c7dcf
+--- /dev/null
++++ b/src/engine/platform/ios_touch_pad.h
+@@ -0,0 +1,11 @@
++#pragma once
++
++struct SDL_Window;
++
++namespace pt::ios {
++
++/* iPhone: on-screen controls that drive a virtual gamepad, so the game sees an ordinary controller.
++   Hidden while a real controller is connected. */
++void AttachTouchPad(SDL_Window* window);
++
++}  // namespace pt::ios
+diff --git a/src/engine/platform/ios_touch_pad.mm b/src/engine/platform/ios_touch_pad.mm
+new file mode 100644
+index 0000000..e82c568
+--- /dev/null
++++ b/src/engine/platform/ios_touch_pad.mm
+@@ -0,0 +1,331 @@
++#include "engine/platform/ios_touch_pad.h"
++
++#include <SDL3/SDL.h>
++
++#import <GameController/GameController.h>
++#import <UIKit/UIKit.h>
++
++#include <cmath>
++
++#include "engine/core/log.h"
++
++namespace {
++
++SDL_Joystick* g_pad = nullptr;
++
++void SetButton(SDL_GamepadButton b, bool down) {
++    if (g_pad) SDL_SetJoystickVirtualButton(g_pad, b, down);
++}
++
++void SetAxis(SDL_GamepadAxis a, float v) {
++    if (!g_pad) return;
++    v = std::fmax(-1.0f, std::fmin(1.0f, v));
++    SDL_SetJoystickVirtualAxis(g_pad, a, static_cast<Sint16>(v * 32767.0f));
++}
++
++}  // namespace
++
++/* One round button. */
++@interface PTPadButton : NSObject
++@property(nonatomic) CGRect frame;
++@property(nonatomic, copy) NSString* label;
++@property(nonatomic) SDL_GamepadButton button;
++@property(nonatomic) int trigger; /* 0: a button, 1: left trigger, 2: right trigger */
++@property(nonatomic) BOOL down;
++@end
++@implementation PTPadButton
++@end
++
++/* A floating stick: appears where the finger lands, deflects as it moves. */
++@interface PTStick : NSObject
++@property(nonatomic) UITouch* touch;
++@property(nonatomic) CGPoint origin;
++@property(nonatomic) CGPoint knob;
++@property(nonatomic) SDL_GamepadAxis axis_x;
++@property(nonatomic) SDL_GamepadAxis axis_y;
++@end
++@implementation PTStick
++@end
++
++@interface PTTouchPadView : UIView
++@end
++
++@implementation PTTouchPadView {
++    NSMutableArray<PTPadButton*>* _buttons;
++    NSMutableDictionary<NSValue*, PTPadButton*>* _held;
++    PTStick* _move;
++    PTStick* _look;
++    UIButton* _toggle;
++    BOOL _hidden_by_user;
++}
++
++- (instancetype)initWithFrame:(CGRect)frame {
++    self = [super initWithFrame:frame];
++    self.backgroundColor = UIColor.clearColor;
++    self.multipleTouchEnabled = YES;
++    self.opaque = NO;
++    self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
++    _buttons = [NSMutableArray array];
++    _held = [NSMutableDictionary dictionary];
++    _move = [PTStick new];
++    _move.axis_x = SDL_GAMEPAD_AXIS_LEFTX;
++    _move.axis_y = SDL_GAMEPAD_AXIS_LEFTY;
++    _look = [PTStick new];
++    _look.axis_x = SDL_GAMEPAD_AXIS_RIGHTX;
++    _look.axis_y = SDL_GAMEPAD_AXIS_RIGHTY;
++
++    _toggle = [UIButton buttonWithType:UIButtonTypeSystem];
++    [_toggle setTitle:@"Hide" forState:UIControlStateNormal];
++    _toggle.titleLabel.font = [UIFont boldSystemFontOfSize:12];
++    _toggle.tintColor = [UIColor colorWithWhite:1 alpha:0.6];
++    _toggle.backgroundColor = [UIColor colorWithWhite:0 alpha:0.25];
++    _toggle.layer.cornerRadius = 8;
++    [_toggle addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];
++    [self addSubview:_toggle];
++
++    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(controllersChanged) name:GCControllerDidConnectNotification object:nil];
++    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(controllersChanged) name:GCControllerDidDisconnectNotification object:nil];
++    [self controllersChanged];
++    return self;
++}
++
++- (void)toggle {
++    _hidden_by_user = !_hidden_by_user;
++    [_toggle setTitle:_hidden_by_user ? @"Pad" : @"Hide" forState:UIControlStateNormal];
++    [self releaseAll];
++    [self setNeedsDisplay];
++}
++
++- (void)controllersChanged {
++    BOOL real = NO;
++    for (GCController* c in GCController.controllers) {
++        if (c.extendedGamepad) real = YES;
++    }
++    if (real != self.hidden) {
++        [self releaseAll];
++        self.hidden = real;
++    }
++}
++
++- (void)addButton:(NSString*)label at:(CGPoint)c radius:(CGFloat)r button:(SDL_GamepadButton)b trigger:(int)t {
++    PTPadButton* p = [PTPadButton new];
++    p.frame = CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r);
++    p.label = label;
++    p.button = b;
++    p.trigger = t;
++    [_buttons addObject:p];
++}
++
++- (void)layoutSubviews {
++    [super layoutSubviews];
++    [self releaseAll];
++    [_buttons removeAllObjects];
++    const CGSize s = self.bounds.size;
++    const UIEdgeInsets inset = self.safeAreaInsets;
++    const CGFloat unit = std::fmin(s.width, s.height) / 9.0;
++    const CGFloat r = unit * 0.55;
++    /* face buttons, PlayStation layout, bottom right */
++    const CGPoint face = CGPointMake(s.width - inset.right - unit * 2.0, s.height - inset.bottom - unit * 2.2);
++    [self addButton:@"✕" at:CGPointMake(face.x, face.y + unit) radius:r button:SDL_GAMEPAD_BUTTON_SOUTH trigger:0];
++    [self addButton:@"○" at:CGPointMake(face.x + unit, face.y) radius:r button:SDL_GAMEPAD_BUTTON_EAST trigger:0];
++    [self addButton:@"□" at:CGPointMake(face.x - unit, face.y) radius:r button:SDL_GAMEPAD_BUTTON_WEST trigger:0];
++    [self addButton:@"△" at:CGPointMake(face.x, face.y - unit) radius:r button:SDL_GAMEPAD_BUTTON_NORTH trigger:0];
++    /* shoulders and triggers in the top corners */
++    const CGFloat top = inset.top + unit * 0.9;
++    [self addButton:@"L2" at:CGPointMake(inset.left + unit * 0.9, top) radius:r button:SDL_GAMEPAD_BUTTON_INVALID trigger:1];
++    [self addButton:@"L1" at:CGPointMake(inset.left + unit * 2.2, top) radius:r button:SDL_GAMEPAD_BUTTON_LEFT_SHOULDER trigger:0];
++    [self addButton:@"R1" at:CGPointMake(s.width - inset.right - unit * 2.2, top) radius:r button:SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER trigger:0];
++    [self addButton:@"R2" at:CGPointMake(s.width - inset.right - unit * 0.9, top) radius:r button:SDL_GAMEPAD_BUTTON_INVALID trigger:2];
++    /* options in the middle at the top */
++    [self addButton:@"≡" at:CGPointMake(s.width * 0.5 + unit * 0.8, top) radius:r * 0.8 button:SDL_GAMEPAD_BUTTON_START trigger:0];
++    [self addButton:@"L3" at:CGPointMake(inset.left + unit * 0.9, s.height - inset.bottom - unit * 0.8) radius:r * 0.8 button:SDL_GAMEPAD_BUTTON_LEFT_STICK trigger:0];
++    [self addButton:@"R3" at:CGPointMake(face.x - unit * 2.3, s.height - inset.bottom - unit * 0.8) radius:r * 0.8 button:SDL_GAMEPAD_BUTTON_RIGHT_STICK trigger:0];
++    _toggle.frame = CGRectMake(s.width * 0.5 - unit * 1.6, top - 14, unit * 1.4, 28);
++    [self setNeedsDisplay];
++}
++
++- (CGFloat)stickRadius {
++    return std::fmin(self.bounds.size.width, self.bounds.size.height) / 9.0 * 1.2;
++}
++
++- (void)updateStick:(PTStick*)stick {
++    const CGFloat R = [self stickRadius];
++    CGFloat dx = stick.knob.x - stick.origin.x, dy = stick.knob.y - stick.origin.y;
++    const CGFloat len = std::sqrt(dx * dx + dy * dy);
++    if (len > R) {
++        dx *= R / len;
++        dy *= R / len;
++    }
++    SetAxis(stick.axis_x, dx / R);
++    SetAxis(stick.axis_y, dy / R);
++}
++
++- (void)press:(PTPadButton*)b down:(BOOL)down {
++    b.down = down;
++    if (b.trigger == 1) SetAxis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER, down ? 1.0f : 0.0f);
++    else if (b.trigger == 2) SetAxis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, down ? 1.0f : 0.0f);
++    else SetButton(b.button, down);
++}
++
++- (PTPadButton*)buttonAt:(CGPoint)p {
++    for (PTPadButton* b in _buttons) {
++        if (CGRectContainsPoint(CGRectInset(b.frame, -6, -6), p)) return b;
++    }
++    return nil;
++}
++
++- (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event {
++    if (_hidden_by_user) return;
++    for (UITouch* t in touches) {
++        const CGPoint p = [t locationInView:self];
++        if (PTPadButton* b = [self buttonAt:p]) {
++            _held[[NSValue valueWithNonretainedObject:t]] = b;
++            [self press:b down:YES];
++        } else if (p.x < self.bounds.size.width * 0.5 && !_move.touch) {
++            _move.touch = t;
++            _move.origin = _move.knob = p;
++        } else if (p.x >= self.bounds.size.width * 0.5 && !_look.touch) {
++            _look.touch = t;
++            _look.origin = _look.knob = p;
++        }
++    }
++    [self setNeedsDisplay];
++}
++
++- (void)touchesMoved:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event {
++    for (UITouch* t in touches) {
++        const CGPoint p = [t locationInView:self];
++        if (t == _move.touch) {
++            _move.knob = p;
++            [self updateStick:_move];
++        } else if (t == _look.touch) {
++            _look.knob = p;
++            [self updateStick:_look];
++        } else {
++            /* slide between buttons */
++            NSValue* key = [NSValue valueWithNonretainedObject:t];
++            PTPadButton* old = _held[key];
++            PTPadButton* now = [self buttonAt:p];
++            if (old != now) {
++                if (old) [self press:old down:NO];
++                if (now) [self press:now down:YES];
++                if (now) _held[key] = now;
++                else [_held removeObjectForKey:key];
++            }
++        }
++    }
++    [self setNeedsDisplay];
++}
++
++- (void)endTouches:(NSSet<UITouch*>*)touches {
++    for (UITouch* t in touches) {
++        if (t == _move.touch) {
++            _move.touch = nil;
++            SetAxis(SDL_GAMEPAD_AXIS_LEFTX, 0);
++            SetAxis(SDL_GAMEPAD_AXIS_LEFTY, 0);
++        } else if (t == _look.touch) {
++            _look.touch = nil;
++            SetAxis(SDL_GAMEPAD_AXIS_RIGHTX, 0);
++            SetAxis(SDL_GAMEPAD_AXIS_RIGHTY, 0);
++        } else {
++            NSValue* key = [NSValue valueWithNonretainedObject:t];
++            if (PTPadButton* b = _held[key]) [self press:b down:NO];
++            [_held removeObjectForKey:key];
++        }
++    }
++    [self setNeedsDisplay];
++}
++
++- (void)touchesEnded:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event { [self endTouches:touches]; }
++- (void)touchesCancelled:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event { [self endTouches:touches]; }
++
++- (void)releaseAll {
++    for (PTPadButton* b in _buttons) {
++        if (b.down) [self press:b down:NO];
++    }
++    [_held removeAllObjects];
++    _move.touch = nil;
++    _look.touch = nil;
++    for (SDL_GamepadAxis a : {SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY}) SetAxis(a, 0);
++}
++
++- (void)drawRect:(CGRect)rect {
++    if (_hidden_by_user) return;
++    UIColor* fill = [UIColor colorWithWhite:1 alpha:0.10];
++    UIColor* pressed = [UIColor colorWithWhite:1 alpha:0.30];
++    UIColor* edge = [UIColor colorWithWhite:1 alpha:0.35];
++    for (PTPadButton* b in _buttons) {
++        UIBezierPath* circle = [UIBezierPath bezierPathWithOvalInRect:b.frame];
++        [(b.down ? pressed : fill) setFill];
++        [circle fill];
++        [edge setStroke];
++        circle.lineWidth = 1.5;
++        [circle stroke];
++        NSDictionary* attrs = @{NSFontAttributeName : [UIFont boldSystemFontOfSize:b.frame.size.height * 0.38],
++                                NSForegroundColorAttributeName : [UIColor colorWithWhite:1 alpha:0.7]};
++        const CGSize ts = [b.label sizeWithAttributes:attrs];
++        [b.label drawAtPoint:CGPointMake(CGRectGetMidX(b.frame) - ts.width / 2, CGRectGetMidY(b.frame) - ts.height / 2) withAttributes:attrs];
++    }
++    const CGFloat R = [self stickRadius];
++    for (PTStick* s in @[ _move, _look ]) {
++        if (!s.touch) continue;
++        UIBezierPath* base = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(s.origin.x - R, s.origin.y - R, 2 * R, 2 * R)];
++        [fill setFill];
++        [base fill];
++        [edge setStroke];
++        [base stroke];
++        CGFloat dx = s.knob.x - s.origin.x, dy = s.knob.y - s.origin.y;
++        const CGFloat len = std::sqrt(dx * dx + dy * dy);
++        if (len > R) {
++            dx *= R / len;
++            dy *= R / len;
++        }
++        const CGFloat k = R * 0.45;
++        UIBezierPath* knob = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(s.origin.x + dx - k, s.origin.y + dy - k, 2 * k, 2 * k)];
++        [pressed setFill];
++        [knob fill];
++    }
++}
++
++/* Touches outside the controls still reach the game only when the pad is hidden. */
++- (UIView*)hitTest:(CGPoint)point withEvent:(UIEvent*)event {
++    UIView* hit = [super hitTest:point withEvent:event];
++    if (hit == _toggle) return hit;
++    return _hidden_by_user ? nil : hit;
++}
++
++@end
++
++namespace pt::ios {
++
++void AttachTouchPad(SDL_Window* window) {
++    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
++    if (!g_pad) {
++        SDL_VirtualJoystickDesc desc;
++        SDL_INIT_INTERFACE(&desc);
++        desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
++        desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
++        desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
++        desc.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1u;
++        desc.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1u;
++        desc.name = "Touch controls";
++        const SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
++        if (id) g_pad = SDL_OpenJoystick(id);
++        if (!g_pad) LogError("touch controls: no virtual gamepad ({})", SDL_GetError());
++        else {
++            SetAxis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER, 0);
++            SetAxis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, 0);
++        }
++    }
++    UIWindow* ui_window = (__bridge UIWindow*)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr);
++    UIView* host = ui_window.rootViewController.view ?: ui_window;
++    if (!host) {
++        LogError("touch controls: no UIKit view");
++        return;
++    }
++    PTTouchPadView* pad = [[PTTouchPadView alloc] initWithFrame:host.bounds];
++    [host addSubview:pad];
++    LogInfo("touch controls: attached");
++}
++
++}  // namespace pt::ios
+diff --git a/src/main.cpp b/src/main.cpp
+index 0c6a6d6..cf469fd 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -227,6 +227,7 @@ bool ProbeD3D12(std::string& reason) {
+ #include "engine/platform/user_data.h"
+ #include "engine/platform/graphics_presets.h"
+ #include "engine/platform/virtual_pad.h"
++#include "engine/platform/ios_touch_pad.h"
+ #include "engine/voice/microphone.h"
+ #include "engine/voice/voice_recognizer.h"
+ #include "game/archive.h"
+@@ -10319,6 +10320,9 @@ int main(int argc, char** argv) {
+         }
+         ApplyFullscreen(app);
+         SDL_ShowWindow(app.window);
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++        pt::ios::AttachTouchPad(app.window);
++#endif
+         pt::os::ClearWindow(WindowHandle(app.window));
+         LogWindowState(app, "window shown");
+         LogDisplays();
