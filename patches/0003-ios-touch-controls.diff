@@ -34,10 +34,10 @@ index 0000000..38c7dcf
 +}  // namespace pt::ios
 diff --git a/src/engine/platform/ios_touch_pad.mm b/src/engine/platform/ios_touch_pad.mm
 new file mode 100644
-index 0000000..7e9ad65
+index 0000000..05ccabc
 --- /dev/null
 +++ b/src/engine/platform/ios_touch_pad.mm
-@@ -0,0 +1,521 @@
+@@ -0,0 +1,542 @@
 +#include "engine/platform/ios_touch_pad.h"
 +
 +#include <SDL3/SDL.h>
@@ -84,6 +84,7 @@ index 0000000..7e9ad65
 +@property(nonatomic) CGPoint knob;
 +@property(nonatomic) SDL_GamepadAxis axis_x;
 +@property(nonatomic) SDL_GamepadAxis axis_y;
++@property(nonatomic) NSTimeInterval began;
 +@end
 +@implementation PTStick
 +@end
@@ -109,6 +110,8 @@ index 0000000..7e9ad65
 +    UIButton* _flip;
 +    UIButton* _split;
 +    BOOL _hidden_by_user;
++    BOOL _ghost;              /* double tap: controls still work but are not drawn */
++    NSTimeInterval _last_tap;
 +}
 +
 +@synthesize splitMode = _splitMode;
@@ -267,9 +270,11 @@ index 0000000..7e9ad65
 +        } else if (p.x < self.bounds.size.width * 0.5 && !_move.touch) {
 +            _move.touch = t;
 +            _move.origin = _move.knob = p;
++            _move.began = t.timestamp;
 +        } else if (p.x >= self.bounds.size.width * 0.5 && !_look.touch) {
 +            _look.touch = t;
 +            _look.origin = _look.knob = p;
++            _look.began = t.timestamp;
 +        }
 +    }
 +    [self setNeedsDisplay];
@@ -300,8 +305,24 @@ index 0000000..7e9ad65
 +    [self setNeedsDisplay];
 +}
 +
++/* A quick tap on the stick areas; two in a row show or hide the controls (they keep working while hidden). */
++- (void)noteTapFor:(PTStick*)stick touch:(UITouch*)t {
++    const CGPoint p = [t locationInView:self];
++    const CGFloat moved = std::hypot(p.x - stick.origin.x, p.y - stick.origin.y);
++    if (t.timestamp - stick.began > 0.25 || moved > 15) return;
++    if (t.timestamp - _last_tap < 0.35) {
++        _ghost = !_ghost;
++        _last_tap = 0;
++        [self setNeedsDisplay];
++    } else {
++        _last_tap = t.timestamp;
++    }
++}
++
 +- (void)endTouches:(NSSet<UITouch*>*)touches {
 +    for (UITouch* t in touches) {
++        if (t == _move.touch) [self noteTapFor:_move touch:t];
++        else if (t == _look.touch) [self noteTapFor:_look touch:t];
 +        if (t == _move.touch) {
 +            _move.touch = nil;
 +            SetAxis(SDL_GAMEPAD_AXIS_LEFTX, 0);
@@ -333,7 +354,7 @@ index 0000000..7e9ad65
 +}
 +
 +- (void)drawRect:(CGRect)rect {
-+    if (_hidden_by_user) return;
++    if (_hidden_by_user || _ghost) return;
 +    UIColor* fill = [UIColor colorWithWhite:1 alpha:0.10];
 +    UIColor* pressed = [UIColor colorWithWhite:1 alpha:0.30];
 +    UIColor* edge = [UIColor colorWithWhite:1 alpha:0.35];
