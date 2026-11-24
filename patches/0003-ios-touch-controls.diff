@@ -34,10 +34,10 @@ index 0000000..38c7dcf
 +}  // namespace pt::ios
 diff --git a/src/engine/platform/ios_touch_pad.mm b/src/engine/platform/ios_touch_pad.mm
 new file mode 100644
-index 0000000..1525466
+index 0000000..7e9ad65
 --- /dev/null
 +++ b/src/engine/platform/ios_touch_pad.mm
-@@ -0,0 +1,499 @@
+@@ -0,0 +1,521 @@
 +#include "engine/platform/ios_touch_pad.h"
 +
 +#include <SDL3/SDL.h>
@@ -379,18 +379,41 @@ index 0000000..1525466
 +
 +@end
 +
++/* The controls live in a window of their own above SDL's: SDL swaps its view controller's view when it makes the Metal
++   view, which would take an overlay inside it away. Touches the controls don't use fall through to the game window. */
++@interface PTPadWindow : UIWindow
++@end
++@implementation PTPadWindow
++- (UIView*)hitTest:(CGPoint)point withEvent:(UIEvent*)event {
++    UIView* hit = [super hitTest:point withEvent:event];
++    return (hit == self || hit == self.rootViewController.view.superview) ? nil : hit;
++}
++@end
++
++@interface PTPadController : UIViewController
++@property(nonatomic, strong) PTTouchPadView* pad;
++@end
++@implementation PTPadController
++- (void)loadView {
++    self.view = self.pad;
++}
++- (BOOL)prefersStatusBarHidden { return YES; }
++- (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
++@end
++
 +/* iPhone Duo: the game on one half, the controller on the other. The split follows the crease that iOS reports (top and
 +   bottom in the laptop pose, left and right in the book pose); Flip swaps the halves. Split: Auto splits while the phone
-+   is partly folded, On always, Off never. */
++   is partly folded, On always, Off never. The game's window is resized to its half, so it renders at that size. */
 +@implementation PTDuoLayout {
-+    __weak UIView* _host;
++    __weak UIWindow* _game;
++    PTPadWindow* _controls;
 +    __weak PTTouchPadView* _pad;
++    __weak UIView* _hinge_view;
 +    id _hinge;
 +    NSInteger _hinge_status; /* UIHingeStatus: 0 unknown, 1 closed, 2 partly open, 3 open */
 +    int _mode;               /* 0 auto, 1 on, 2 off */
 +    BOOL _flipped;
 +    NSTimer* _timer;
-+    CGRect _last_game;
 +}
 +
 ++ (instancetype)shared {
@@ -398,75 +421,75 @@ index 0000000..1525466
 +    return layout;
 +}
 +
-+- (void)attachHost:(UIView*)host pad:(PTTouchPadView*)pad {
-+    _host = host;
++- (void)attachGame:(UIWindow*)game controls:(PTPadWindow*)controls pad:(PTTouchPadView*)pad {
++    _game = game;
++    _controls = controls;
 +    _pad = pad;
-+    _last_game = CGRectNull;
-+    if (@available(iOS 27.1, *)) {
-+        UIHingeInteraction* hinge = [[UIHingeInteraction alloc] initWithUpdateHandler:^(UIHingeInteraction*, UIHingeInteractionUpdate* update) {
-+            PTDuoLayout* me = [PTDuoLayout shared];
-+            NSInteger status = update.hinge ? update.hinge.status : 0;
-+            if (status != me->_hinge_status) {
-+                me->_hinge_status = status;
-+                pt::LogInfo("iPhone Duo: hinge {}", static_cast<int>(status));
-+                [me apply];
-+            }
-+        }];
-+        [host addInteraction:hinge];
-+        _hinge = hinge;
-+    }
-+    /* SDL adds its Metal view after the window appears, and the hinge or the bounds can change at any time */
 +    _timer = [NSTimer scheduledTimerWithTimeInterval:0.25 target:self selector:@selector(apply) userInfo:nil repeats:YES];
 +    [self apply];
 +}
 +
 +- (void)flip {
 +    _flipped = !_flipped;
-+    _last_game = CGRectNull;
 +    [self apply];
 +}
 +
 +- (void)cycleSplit {
 +    _mode = (_mode + 1) % 3;
-+    _last_game = CGRectNull;
 +    [_pad setSplitTitle:@[ @"Split: Auto", @"Split: On", @"Split: Off" ][_mode]];
 +    [self apply];
 +}
 +
-+- (UIView*)metalViewIn:(UIView*)host {
-+    for (UIView* v in host.subviews) {
-+        if ([v.layer isKindOfClass:[CAMetalLayer class]]) return v;
++/* hinge updates come through an interaction on a view; the controls' view stays put, unlike SDL's */
++- (void)watchHinge:(UIView*)view {
++    if (_hinge_view == view) return;
++    if (@available(iOS 27.1, *)) {
++        if (_hinge && _hinge_view) [_hinge_view removeInteraction:_hinge];
++        UIHingeInteraction* hinge = [[UIHingeInteraction alloc] initWithUpdateHandler:^(UIHingeInteraction*, UIHingeInteractionUpdate* update) {
++            PTDuoLayout* me = [PTDuoLayout shared];
++            const NSInteger status = update.hinge ? update.hinge.status : 0;
++            if (status != me->_hinge_status) {
++                me->_hinge_status = status;
++                pt::LogInfo("iPhone Duo: hinge {}", static_cast<int>(status));
++                [me apply];
++            }
++        }];
++        [view addInteraction:hinge];
++        _hinge = hinge;
++        _hinge_view = view;
 +    }
-+    return [host.layer isKindOfClass:[CAMetalLayer class]] ? host : nil;
 +}
 +
-+/* The crease in host coordinates, or CGRectNull */
-+- (CGRect)crease {
++/* The crease in the scene's coordinates, or CGRectNull */
++- (CGRect)creaseIn:(UIWindowScene*)scene view:(UIView*)view {
 +    if (@available(iOS 27.1, *)) {
-+        NSArray<UIViewReservedRegion*>* regions = [_host reservedRegionsOfKind:[UIViewReservedRegionKind divisionRegionKind]
-+                                                                       options:UIViewReservedRegionQueryOptionsIncludeInactive];
++        NSArray<UIViewReservedRegion*>* regions = [view reservedRegionsOfKind:[UIViewReservedRegionKind divisionRegionKind]
++                                                                      options:UIViewReservedRegionQueryOptionsIncludeInactive];
 +        for (UIViewReservedRegion* region in regions) {
 +            const CGRect f = region.frame;
 +            const UIEdgeInsets m = region.margins;
-+            return CGRectMake(f.origin.x + m.left, f.origin.y + m.top, f.size.width - m.left - m.right, f.size.height - m.top - m.bottom);
++            const CGRect r = CGRectMake(f.origin.x + m.left, f.origin.y + m.top, f.size.width - m.left - m.right, f.size.height - m.top - m.bottom);
++            return [view convertRect:r toCoordinateSpace:scene.coordinateSpace];
 +        }
 +    }
 +    return CGRectNull;
 +}
 +
 +- (void)apply {
-+    UIView* host = _host;
++    UIWindow* game = _game;
++    PTPadWindow* controls = _controls;
 +    PTTouchPadView* pad = _pad;
-+    if (!host || !pad) return;
-+    UIView* metal = [self metalViewIn:host];
-+    const CGRect bounds = host.bounds;
++    UIWindowScene* scene = game.windowScene;
++    if (!game || !controls || !pad || !scene) return;
++    [self watchHinge:pad];
++    const CGRect bounds = scene.coordinateSpace.bounds;
 +    const BOOL split = _mode == 1 || (_mode == 0 && _hinge_status == 2);
-+    CGRect game = bounds, controls = bounds;
++    CGRect game_rect = bounds, pad_rect = bounds;
 +    if (split) {
-+        CGRect crease = [self crease];
++        /* the controls' window is full size while not split, so ask it for the crease before it shrinks */
++        CGRect crease = [self creaseIn:scene view:game];
 +        BOOL across;
 +        if (CGRectIsNull(crease) || CGRectIsEmpty(crease)) {
-+            /* no crease reported: split the longer side in half */
 +            across = bounds.size.height >= bounds.size.width;
 +            crease = across ? CGRectMake(0, CGRectGetMidY(bounds), bounds.size.width, 0) : CGRectMake(CGRectGetMidX(bounds), 0, 0, bounds.size.height);
 +        } else {
@@ -480,25 +503,18 @@ index 0000000..1525466
 +            first = CGRectMake(0, 0, CGRectGetMinX(crease), bounds.size.height);
 +            second = CGRectMake(CGRectGetMaxX(crease), 0, bounds.size.width - CGRectGetMaxX(crease), bounds.size.height);
 +        }
-+        /* game on top (or left), controller on the bottom (or right); Flip swaps them */
-+        game = _flipped ? second : first;
-+        controls = _flipped ? first : second;
++        game_rect = _flipped ? second : first;
++        pad_rect = _flipped ? first : second;
 +    }
 +    if (pad.splitMode != split) pad.splitMode = split;
-+    if (!CGRectEqualToRect(pad.frame, controls)) {
-+        pad.autoresizingMask = UIViewAutoresizingNone;
-+        pad.frame = controls;
++    if (!CGRectEqualToRect(controls.frame, pad_rect)) controls.frame = pad_rect;
++    if (!CGRectEqualToRect(game.frame, game_rect)) {
++        game.frame = game_rect;
++        [game.rootViewController.view setNeedsLayout];
++        pt::LogInfo("iPhone Duo: game {}x{} at {},{}; controls {}x{} at {},{}{}", game_rect.size.width, game_rect.size.height,
++                    game_rect.origin.x, game_rect.origin.y, pad_rect.size.width, pad_rect.size.height, pad_rect.origin.x,
++                    pad_rect.origin.y, split ? " (split)" : "");
 +    }
-+    if (metal && !CGRectEqualToRect(game, _last_game)) {
-+        _last_game = game;
-+        metal.autoresizingMask = UIViewAutoresizingNone;
-+        metal.frame = game;
-+        [metal setNeedsLayout];
-+        [metal layoutIfNeeded];
-+        pt::LogInfo("iPhone Duo: game {}x{} at {},{}; controls {}x{}{}", game.size.width, game.size.height, game.origin.x, game.origin.y,
-+                    controls.size.width, controls.size.height, split ? " (split)" : "");
-+    }
-+    [host bringSubviewToFront:pad];
 +}
 +
 +@end
@@ -524,21 +540,27 @@ index 0000000..1525466
 +            SetAxis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, 0);
 +        }
 +    }
-+    UIWindow* ui_window = (__bridge UIWindow*)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr);
-+    UIView* host = ui_window.rootViewController.view ?: ui_window;
-+    if (!host) {
-+        LogError("touch controls: no UIKit view");
++    UIWindow* game = (__bridge UIWindow*)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr);
++    if (!game || !game.windowScene) {
++        LogError("touch controls: no UIKit window");
 +        return;
 +    }
-+    PTTouchPadView* pad = [[PTTouchPadView alloc] initWithFrame:host.bounds];
-+    [host addSubview:pad];
-+    [[PTDuoLayout shared] attachHost:host pad:pad];
++    PTTouchPadView* pad = [[PTTouchPadView alloc] initWithFrame:game.windowScene.coordinateSpace.bounds];
++    PTPadController* controller = [PTPadController new];
++    controller.pad = pad;
++    PTPadWindow* controls = [[PTPadWindow alloc] initWithWindowScene:game.windowScene];
++    controls.windowLevel = UIWindowLevelNormal + 1;
++    controls.backgroundColor = UIColor.clearColor;
++    controls.rootViewController = controller;
++    controls.frame = game.windowScene.coordinateSpace.bounds;
++    controls.hidden = NO;
++    [[PTDuoLayout shared] attachGame:game controls:controls pad:pad];
 +    LogInfo("touch controls: attached");
 +}
 +
 +}  // namespace pt::ios
 diff --git a/src/main.cpp b/src/main.cpp
-index 0c6a6d6..cf469fd 100644
+index 0c6a6d6..9a5b8f5 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -227,6 +227,7 @@ bool ProbeD3D12(std::string& reason) {
@@ -549,7 +571,20 @@ index 0c6a6d6..cf469fd 100644
  #include "engine/voice/microphone.h"
  #include "engine/voice/voice_recognizer.h"
  #include "game/archive.h"
-@@ -10319,6 +10320,9 @@ int main(int argc, char** argv) {
+@@ -1115,7 +1116,12 @@ std::filesystem::path UserDataDir() {
+         std::filesystem::path requested = base / "data";
+         if (bundled) {
+             const auto home = pt::os::GetEnv("HOME");
++#if TARGET_OS_IPHONE
++            /* iPhone: in Documents, so pt.log, pt.ini and the save can be reached with the Files app */
++            if (!home.empty()) requested = pt::os::PathFromUtf8(home) / "Documents" / "Settings and log";
++#else
+             if (!home.empty()) requested = pt::os::PathFromUtf8(home) / "Library" / "Application Support" / "pt-port" / "pt";
++#endif
+         }
+         std::error_code error;
+         const auto resolved = pt::platform::ResolveMacDataPath(requested, error);
+@@ -10319,6 +10325,9 @@ int main(int argc, char** argv) {
          }
          ApplyFullscreen(app);
          SDL_ShowWindow(app.window);
