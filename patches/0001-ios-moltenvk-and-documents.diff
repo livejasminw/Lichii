@@ -13,7 +13,7 @@ index aa21292..b31e7a5 100644
              if (std::filesystem::is_regular_file(candidate, ec)) return std::filesystem::weakly_canonical(candidate, ec).string();
          }
 diff --git a/src/main.cpp b/src/main.cpp
-index c901d71..64b7af3 100644
+index c901d71..0c6a6d6 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -1,3 +1,6 @@
@@ -23,7 +23,7 @@ index c901d71..64b7af3 100644
  #include <SDL3/SDL.h>
  #include <SDL3/SDL_main.h>
  #include "engine/core/ascii.h"
-@@ -1191,6 +1194,23 @@ std::filesystem::path FindGameDir(const Options& options, std::string& source, b
+@@ -1191,6 +1194,34 @@ std::filesystem::path FindGameDir(const Options& options, std::string& source, b
          }
          return options.game_dir;
      }
@@ -32,6 +32,17 @@ index c901d71..64b7af3 100644
 +       folder of any name */
 +    if (const auto home = pt::os::GetEnv("HOME"); !home.empty()) {
 +        const std::filesystem::path documents = pt::os::PathFromUtf8(home) / "Documents";
++        /* The Files app shows the app's folder only once Documents exists and holds something */
++        {
++            std::error_code mk;
++            std::filesystem::create_directories(documents, mk);
++            const std::filesystem::path note = documents / "Put the P.T. game files here.txt";
++            if (!std::filesystem::exists(note, mk)) {
++                std::ofstream out(note, std::ios::binary);
++                out << "Copy chunk1.psarc, texture.qar and pathid_list_ps4.bin into this folder (On My iPhone > P.T.),\n"
++                       "from your P.T. PC Port install folder, then start P.T. again.\n";
++            }
++        }
 +        if (LooksLikeGameDir(documents)) {
 +            source = "the app's Documents folder";
 +            return documents;
